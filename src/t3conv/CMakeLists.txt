@@ -13,6 +13,8 @@ target_include_directories(t3conv PRIVATE
 )
 
 target_link_libraries(t3conv PRIVATE
+    advapi32
     ole32
     oleaut32
+    shell32
 )

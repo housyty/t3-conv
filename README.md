@@ -62,6 +62,7 @@ The only configuration file is [`t3conv.ini`](./t3conv.ini). It can stay fully c
 Resolution order:
 
 - `paths.tangent_root`: INI value, then `T3CONV_TANGENT_ROOT`, then auto-detection.
+- Tianzheng auto-detection checks common fixed-drive `X:\Tangent\...` installs first, then nearby workspace or drive-root candidates, and finally Program Files; candidates must contain `TGStart.exe` and `SYS`.
 - `paths.autocad_root`: INI value, then `T3CONV_AUTOCAD_ROOT`, then auto-detection from AutoCAD 2020-2026.
 - `fonts.fontalt`: INI value, then `T3CONV_FONTALT`, then `HZTXT.SHX`.
 - Project fonts are always read from [`fonts`](./fonts).
@@ -114,11 +115,37 @@ Single-file and folder conversions write `t3conv.log` next to `t3conv.exe` / the
 
 Add `-d` / `--debug` to include the launch plan, child stdout/stderr, and internal diagnostics.
 
-Batch conversion reuses the same Tianzheng CAD host between files. It restarts the host only for timeouts, launch failures, crashes, or explicit host-side failures; normal per-file conversion errors are logged and the next DWG continues.
+Batch conversion reuses the same Tianzheng CAD host between files. It restarts the host for child timeouts, launch failures, crashes, or host/direct-worker actions that indicate the host should not be reused. Normal per-file conversion errors are logged and the next DWG continues; restart attempts are capped per batch.
 
 Single-file conversion uses a temporary `_t3conv_work` staging directory under the workspace so the direct worker never writes directly over the requested target. The directory is removed automatically after each conversion attempt.
 
-Host control is optional and normally unnecessary. Single-file and folder conversions automatically reuse or launch the Tianzheng CAD host when needed; use the host options only for troubleshooting or manual pre-warm/stop workflows.
+Single-file and folder conversions automatically inspect, reuse, launch, and clean up the Tianzheng CAD host when needed. Manual host start/stop commands are intentionally not exposed.
+
+## Restore AutoCAD Command Line and Common Settings
+
+If AutoCAD's command line is hidden after conversion or manual debugging, or if dialog boxes, proxy object prompts, external reference notifications, or font fallback behavior changed, first press `Ctrl + 9` to restore the command line. If AutoCAD shows a prompt, choose to show the command line.
+
+After the command line is visible, copy the following snippet into the AutoCAD command line and press Enter to restore common interactive settings:
+
+```lisp
+(progn
+  (command "_.COMMANDLINE")
+  (setvar "FILEDIA" 1)
+  (setvar "CMDDIA" 1)
+  (setvar "CMDECHO" 1)
+  (setvar "EXPERT" 0)
+  (setvar "PROXYNOTICE" 1)
+  (setvar "PROXYSHOW" 1)
+  (setvar "PROXYWEBSEARCH" 0)
+  (setvar "XREFNOTIFY" 2)
+  (setvar "XLOADCTL" 2)
+  (setvar "XREFCTL" 0)
+  (setvar "ISAVEBAK" 1)
+  (setvar "FONTMAP" "acad.fmp")
+  (setvar "FONTALT" "simplex.shx")
+  (princ)
+)
+```
 
 ## CLI Options
 
@@ -136,9 +163,6 @@ Host control is optional and normally unnecessary. Single-file and folder conver
 | `--json` | Print a JSON-style launch plan. |
 | `--tbatsave-bindmode <n>` | Reserved reverse-engineering / diagnostic option. The current direct worker path does not treat it as a stable conversion parameter. |
 | `--tbatsave-bindref <n>` | Reserved reverse-engineering / diagnostic option. The current direct worker path does not treat it as a stable conversion parameter. |
-| `--host-status` | Check whether the background host is ready. |
-| `--host-stop` | Request the background host loop to stop. |
-| `--host-start` | Optional pre-warm command that launches or reuses a background Tianzheng CAD host loop. |
 
 ## Build
 
@@ -159,10 +183,10 @@ The executable is generated at:
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-By default, the script builds the Release binary and creates:
+By default, the script builds the Release binary and overwrites:
 
 ```text
-<project-parent>\dist\t3-conv.zip
+<project-root>\release\t3-conv.zip
 ```
 
 The zip contains only runtime files:
@@ -173,7 +197,7 @@ The zip contains only runtime files:
 - `fonts\`
 - `docs\README-packaged.md`
 
-It intentionally excludes `src`, `tests`, `var`, build intermediates, Tianzheng files, and AutoCAD files.
+It intentionally excludes source, tests, local runtime state, Tianzheng files, and AutoCAD files.
 
 ## Project Layout
 

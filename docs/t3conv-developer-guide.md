@@ -81,6 +81,7 @@ AcPal.dll
 解析规则：
 
 - `tangent_root` 指向 Tianzheng T20 V9 根目录，优先使用 INI，其次 `T3CONV_TANGENT_ROOT`，最后自动检测。
+- Tianzheng 自动检测会优先检查各固定盘 `X:\Tangent\...` 下的常见目录，再检查 workspace 相邻目录或盘符根目录，最后检查 Program Files；候选目录必须同时包含 `TGStart.exe` 和 `SYS`。
 - `autocad_root` 指向 AutoCAD 根目录，优先使用 INI，其次 `T3CONV_AUTOCAD_ROOT`，最后按 AutoCAD 2026 到 AutoCAD 2020 的顺序自动检测。
 - `<workspace_root>\fonts` 是固定项目字体目录，不能通过 INI 修改；目录不存在或没有字体文件时自动跳过。
 - `fontalt` 用于设置 AutoCAD `FONTALT`，优先使用 INI，其次 `T3CONV_FONTALT`，最后使用 `HZTXT.SHX`。
@@ -132,9 +133,6 @@ AcPal.dll
 | `--json` | 输出 JSON 风格执行计划。 |
 | `--tbatsave-bindmode <n>` | 逆向 / 诊断保留参数。当前 direct worker 生产链路不把它作为稳定转换参数。 |
 | `--tbatsave-bindref <n>` | 逆向 / 诊断保留参数。当前 direct worker 生产链路不把它作为稳定转换参数。 |
-| `--host-status` | 检查后台宿主 ready 状态。 |
-| `--host-stop` | 写入 stop 标记，让宿主循环退出。 |
-| `--host-start` | 可选预热命令，用于启动或复用后台 Tianzheng CAD 宿主。 |
 
 未指定 `--timeout-seconds` 时，默认超时为 2 分钟。该值会进入执行计划：
 
@@ -187,7 +185,6 @@ timeout_seconds=120
 
 ```text
 <workspace_root>\var\host\host_ready.txt
-<workspace_root>\var\host\host_stop.txt
 <workspace_root>\var\host\host_bootstrap.txt
 <workspace_root>\var\host\worker_status.txt
 ```
@@ -207,7 +204,6 @@ timeout_seconds=120
 | --- | --- |
 | `host_bootstrap.txt` | C++ 写入启动触发标记，`tangent.mnl` bridge 看到后加载 runtime LSP。 |
 | `host_ready.txt` | LSP 环境准备完成后写入，C++ 用它判断宿主是否 ready。 |
-| `host_stop.txt` | `--host-stop` 写入停止请求，LSP 看到后清理宿主 ready 状态。 |
 | `worker_status.txt` | direct worker 写入成功 / 失败、步骤、`save_result` 等诊断。 |
 
 除上表列出的 4 个文件外，当前生产链路没有其他 `.txt` 状态标记需要保留。
@@ -380,7 +376,7 @@ host_action=launch_tgstart_tbatsave_after_hung_recovery
 
 批量父进程会逐张启动同一个 `t3conv.exe -s <dwg> -o <target>` 子进程。这样不依赖 PowerShell 脚本，同时保留单张转换崩溃不拖死整个批量任务的隔离能力。不要并发向同一个 Tianzheng `acad.exe` 注入多个 worker。
 
-批量模式会在文件之间复用同一个 Tianzheng CAD 宿主。只有子进程超时、启动失败、崩溃或明确的宿主侧失败时，父进程才会重启宿主；普通图纸转换失败不会触发每张都重启。
+批量模式会在文件之间复用同一个 Tianzheng CAD 宿主。子进程超时、启动失败、崩溃，或 host/direct worker 动作表明当前宿主不应继续复用时，父进程会重启宿主；普通图纸转换失败不会触发每张都重启，每批次重启次数有上限。
 
 批量 debug：
 
@@ -453,7 +449,7 @@ avg_seconds=18.664
 | `AutoCAD is not installed or not found` | 设置 `autocad_root` 或 `T3CONV_AUTOCAD_ROOT`，确认 `<autocad_root>\Fonts` 存在。 |
 | `Tianzheng T20V9 is not installed or not found` | 设置 `tangent_root` 或 `T3CONV_TANGENT_ROOT`，确认根目录存在。 |
 | `TGStart.exe not found` | 检查 `tangent_root` 是否指向 Tianzheng T20 V9 根目录，而不是 `SYS` 子目录。 |
-| `host_ready_state=not_ready` | 运行 `--host-start --timeout-seconds 120`，查看 `var\logs\trigger.log`。 |
+| `host_ready.txt` 未生成 | 直接运行一次普通转换，查看 `var\logs\trigger.log`。 |
 | `tbatsave_direct_worker=acad_not_found` | 确认宿主已启动，或直接让单文件转换触发启动。 |
 | `tbatsave_direct_worker=tch_kernal_not_loaded` | Tianzheng ARX 未加载完成，等待后重试或重启宿主。 |
 | `tbatsave_direct_worker=timeout` | 单张 DWG 可能卡住；可以增大 `--timeout-seconds`，批量模式会记录失败并继续下一张。 |
@@ -499,7 +495,7 @@ python -m unittest discover -s tests
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-默认生成 `<项目父目录>\dist\t3-conv.zip`。ZIP 只包含：
+默认覆盖生成 `<项目根目录>\release\t3-conv.zip`。ZIP 只包含：
 
 ```text
 t3conv.exe

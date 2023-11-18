@@ -45,4 +45,7 @@
   )
 )
 
+(t3conv:tbx-log "TBatSave tangent.mnl bridge immediate self-check")
+(t3conv:tbx-host-loader)
+
 (princ)

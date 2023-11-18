@@ -31,6 +31,11 @@ constexpr const char* kReuseCheckAcadTchKernal = "acad+tch_kernal";
 constexpr const char* kBridgeRuntimeFileName = "tangent_mnl_bridge.runtime.lsp";
 constexpr const char* kRuntimeFontMapFileName = "fontmap.fmp";
 constexpr const char* kDefaultTbatsaveFontAlt = "HZTXT.SHX";
+constexpr DWORD kDirectWorkerProcessAccess =
+    PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
+    PROCESS_QUERY_INFORMATION;
+
+std::optional<std::string> ReadWholeFile(const std::filesystem::path& path);
 
 int ToBindModeValue(const TbatsaveBindMode bind_mode) {
     return static_cast<int>(bind_mode);
@@ -185,6 +190,136 @@ std::vector<std::string> ReadAllLines(const std::filesystem::path& path) {
 bool RemoveFileIfExists(const std::filesystem::path& path) {
     std::error_code error_code;
     return !PathExists(path) || std::filesystem::remove(path, error_code);
+}
+
+
+bool IsIniSectionHeader(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t");
+    if (first == std::string::npos || line[first] != '[') {
+        return false;
+    }
+    const size_t last = line.find_last_not_of(" \t");
+    return last != std::string::npos && line[last] == ']';
+}
+
+
+std::string IniSectionName(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t");
+    const size_t close = line.find(']', first == std::string::npos ? 0 : first);
+    if (first == std::string::npos || close == std::string::npos || line[first] != '[') {
+        return {};
+    }
+    return ToLowerAscii(line.substr(first + 1, close - first - 1));
+}
+
+
+std::string IniKeyName(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t");
+    if (first == std::string::npos || line[first] == ';' || line[first] == '#' ||
+        line[first] == '[') {
+        return {};
+    }
+    const size_t equals = line.find('=', first);
+    if (equals == std::string::npos) {
+        return {};
+    }
+    size_t key_end = equals;
+    while (key_end > first && (line[key_end - 1] == ' ' || line[key_end - 1] == '\t')) {
+        --key_end;
+    }
+    return ToLowerAscii(line.substr(first, key_end - first));
+}
+
+
+std::vector<std::string> SplitIniLines(const std::string& contents) {
+    std::vector<std::string> lines;
+    std::istringstream stream(contents);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+
+std::string JoinIniLines(const std::vector<std::string>& lines) {
+    std::ostringstream stream;
+    for (const auto& line : lines) {
+        stream << line << "\n";
+    }
+    return stream.str();
+}
+
+
+std::string EnsureIniSection(const std::string& contents, const std::string& section) {
+    std::vector<std::string> lines = SplitIniLines(contents);
+    const std::string section_lower = ToLowerAscii(section);
+    for (const auto& line : lines) {
+        if (IsIniSectionHeader(line) && IniSectionName(line) == section_lower) {
+            return JoinIniLines(lines);
+        }
+    }
+
+    if (!lines.empty() && !lines.back().empty()) {
+        lines.push_back("");
+    }
+    lines.push_back("[" + section + "]");
+    return JoinIniLines(lines);
+}
+
+
+std::string NormalizeTianzhengStartupIni(const std::string& contents) {
+    std::vector<std::string> lines = SplitIniLines(EnsureIniSection(contents, "Startup"));
+    bool in_startup = false;
+    bool wrote_show_start_dialog = false;
+
+    for (size_t index = 0; index < lines.size(); ++index) {
+        const std::string& line = lines[index];
+        if (IsIniSectionHeader(line)) {
+            if (in_startup && !wrote_show_start_dialog) {
+                lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index), "ShowStartDlg=0");
+                wrote_show_start_dialog = true;
+                ++index;
+            }
+            in_startup = IniSectionName(line) == "startup";
+            continue;
+        }
+
+        if (in_startup && IniKeyName(line) == "showstartdlg") {
+            lines[index] = "ShowStartDlg=0";
+            wrote_show_start_dialog = true;
+        }
+    }
+
+    if (in_startup && !wrote_show_start_dialog) {
+        lines.push_back("ShowStartDlg=0");
+    }
+    return JoinIniLines(lines);
+}
+
+
+bool EnsureTianzhengStartupDialogDisabled(
+    const ProcessLaunchPlan& plan,
+    std::vector<std::string>& diagnostics
+) {
+    const std::filesystem::path ini_path = plan.tarch_root / "SYS" / "tch.ini";
+    const std::string current = ReadWholeFile(ini_path).value_or("");
+    const std::string normalized = NormalizeTianzhengStartupIni(current);
+    if (current == normalized) {
+        diagnostics.push_back("host_startup_dialog=already_disabled");
+        return true;
+    }
+
+    if (!WriteTextFile(ini_path, normalized)) {
+        diagnostics.push_back("host_startup_dialog=write_failed");
+        return false;
+    }
+
+    diagnostics.push_back("host_startup_dialog=disabled");
+    return true;
 }
 
 
@@ -448,11 +583,44 @@ bool FileContainsMarker(
 
 bool IsReusableAcadHostRunning();
 bool IsReusableAcadHostHealthy();
+int CountAcadProcessesByName();
+bool HasAcadProcessDenyingDirectWorkerAccess();
 
 
 bool IsTbatsaveHostReady(const ProcessLaunchPlan& plan) {
     return FileContainsMarker(plan.host_ready_path, kTbatsaveHostReadyMarker) &&
            IsReusableAcadHostHealthy();
+}
+
+
+bool WaitForTbatsaveHostReady(
+    const ProcessLaunchPlan& plan,
+    const std::chrono::steady_clock::time_point&,
+    const std::chrono::steady_clock::time_point& deadline,
+    std::vector<std::string>& diagnostics
+) {
+    bool saw_ready_without_process = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (IsTbatsaveHostReady(plan)) {
+            diagnostics.push_back("host_ready_file=present_with_tianzheng_process");
+            return true;
+        }
+        if (FileContainsMarker(plan.host_ready_path, kTbatsaveHostReadyMarker) &&
+            !IsReusableAcadHostHealthy() &&
+            !saw_ready_without_process) {
+            diagnostics.push_back("host_ready_file=present_without_tianzheng_process");
+            if (HasAcadProcessDenyingDirectWorkerAccess()) {
+                diagnostics.push_back("host_process_access=denied");
+                diagnostics.push_back(
+                    "host_process_acad_count=" + std::to_string(CountAcadProcessesByName())
+                );
+                return false;
+            }
+            saw_ready_without_process = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    return false;
 }
 
 
@@ -675,8 +843,14 @@ bool EnsureTbatsaveHostStartupHook(
     }
     diagnostics.push_back(std::string("host_hook_runtime_bridge=") + kBridgeRuntimeFileName);
     if (!PathExists(plan.host_mnl_path)) {
-        diagnostics.push_back("host_hook=mnl_missing");
-        return false;
+        if (!WriteTextFile(
+                plan.host_mnl_path,
+                ";; tangent.mnl -- TBatSave host bridge\n(princ)\n"
+            )) {
+            diagnostics.push_back("host_hook=mnl_create_failed");
+            return false;
+        }
+        diagnostics.push_back("host_hook=mnl_created");
     }
 
     const std::string bridge_load_line =
@@ -697,6 +871,28 @@ bool EnsureTbatsaveHostStartupHook(
     }
 
     diagnostics.push_back("host_hook=normalized_mnl");
+    return true;
+}
+
+
+bool EnsureTbatsaveStartupState(
+    const ProcessLaunchPlan& plan,
+    std::vector<std::string>& diagnostics
+) {
+    RemoveFileIfExists(plan.host_stop_path);
+    RemoveFileIfExists(plan.worker_status_path);
+    if (!IsReusableAcadHostHealthy()) {
+        RemoveFileIfExists(plan.host_ready_path);
+        diagnostics.push_back("host_startup=stale_ready_cleared");
+    }
+    if (!EnsureTianzhengStartupDialogDisabled(plan, diagnostics)) {
+        return false;
+    }
+    if (!WriteTextFile(plan.host_bootstrap_path, kTbatsaveHostBootstrapMarker)) {
+        diagnostics.push_back("host_startup=bootstrap_write_failed");
+        return false;
+    }
+    diagnostics.push_back("host_startup=bootstrap_written");
     return true;
 }
 
@@ -756,6 +952,90 @@ std::vector<DWORD> EnumTianzhengAcadProcessIds() {
 }
 
 
+std::vector<DWORD> EnumAcadProcessIdsByName() {
+    std::vector<DWORD> process_ids;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return process_ids;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return process_ids;
+    }
+
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") == 0) {
+            process_ids.push_back(entry.th32ProcessID);
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return process_ids;
+}
+
+
+int CountAcadProcessesByName() {
+    int count = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return count;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return count;
+    }
+
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") == 0) {
+            ++count;
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return count;
+}
+
+
+bool HasAcadProcessDenyingDirectWorkerAccess() {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return false;
+    }
+
+    bool denied = false;
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") != 0) {
+            continue;
+        }
+        HANDLE process = OpenProcess(kDirectWorkerProcessAccess, FALSE, entry.th32ProcessID);
+        if (process != nullptr) {
+            CloseHandle(process);
+            continue;
+        }
+        if (GetLastError() == ERROR_ACCESS_DENIED) {
+            denied = true;
+            break;
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return denied;
+}
+
+
 struct HungWindowProbe {
     DWORD process_id = 0;
     bool found_window = false;
@@ -811,6 +1091,59 @@ bool IsReusableAcadHostRunning() {
 }
 
 
+size_t KillAllAcadProcesses() {
+    size_t killed_count = 0;
+    const std::vector<DWORD> process_ids = EnumAcadProcessIdsByName();
+    for (const DWORD process_id : process_ids) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, process_id);
+        if (process == nullptr) {
+            continue;
+        }
+
+        if (TerminateProcess(process, static_cast<UINT>(ErrorCode::kLoadTimeout))) {
+            WaitForSingleObject(process, 5000);
+            ++killed_count;
+        }
+        CloseHandle(process);
+    }
+    return killed_count;
+}
+
+
+void KillAllAcadProcesses(std::vector<std::string>& diagnostics) {
+    diagnostics.push_back("host_cleanup=kill_all_acad_on_problem");
+    diagnostics.push_back("host_cleanup_acad_count=" + std::to_string(CountAcadProcessesByName()));
+    const size_t killed_count = KillAllAcadProcesses();
+    diagnostics.push_back("host_cleanup_killed_count=" + std::to_string(killed_count));
+}
+
+
+bool ShouldPreserveAcadAfterPermissionDenied(const std::vector<std::string>& diagnostics) {
+    return std::find(
+               diagnostics.begin(),
+               diagnostics.end(),
+               "tbatsave_direct_worker=acad_access_denied"
+           ) != diagnostics.end() ||
+           std::find(
+               diagnostics.begin(),
+               diagnostics.end(),
+               "host_process_access=denied"
+           ) != diagnostics.end();
+}
+
+
+void RequestTbatsaveHostStop(
+    const ProcessLaunchPlan& plan,
+    std::vector<std::string>& diagnostics
+) {
+    if (WriteTextFile(plan.host_stop_path, kTbatsaveHostStopMarker)) {
+        diagnostics.push_back("host_cleanup=stop_requested_after_permission_denied");
+    } else {
+        diagnostics.push_back("host_cleanup=stop_request_failed_after_permission_denied");
+    }
+}
+
+
 size_t KillTianzhengAcadHosts() {
     size_t killed_count = 0;
     const std::vector<DWORD> process_ids = EnumTianzhengAcadProcessIds();
@@ -858,6 +1191,26 @@ bool RecoverHungTianzhengAcadHosts(
     RemoveFileIfExists(plan.worker_status_path);
     diagnostics.push_back("host_recovery=hung_tianzheng_acad_killed");
     diagnostics.push_back("host_recovery_killed_count=" + std::to_string(killed_count));
+    return killed_count > 0;
+}
+
+
+bool RestartNonReadyTianzhengAcadHost(
+    const ProcessLaunchPlan& plan,
+    std::vector<std::string>& diagnostics
+) {
+    if (IsTbatsaveHostReady(plan)) {
+        return false;
+    }
+    if (!IsReusableAcadHostRunning()) {
+        return false;
+    }
+
+    const size_t killed_count = KillTianzhengAcadHosts();
+    RemoveFileIfExists(plan.host_ready_path);
+    RemoveFileIfExists(plan.worker_status_path);
+    diagnostics.push_back("host_startup=non_ready_tianzheng_acad_restarted");
+    diagnostics.push_back("host_startup_restarted_count=" + std::to_string(killed_count));
     return killed_count > 0;
 }
 
@@ -955,7 +1308,6 @@ std::vector<std::string> CollectCommonDiagnostics(const ProcessLaunchPlan& plan)
     }
     diagnostics.push_back("tbatsave_bind_mode=" + std::to_string(ToBindModeValue(plan.tbatsave_bind_mode)));
     diagnostics.push_back("tbatsave_bind_ref=" + std::to_string(plan.tbatsave_bind_ref));
-    diagnostics.push_back("host_control=" + HostControlModeToString(plan.host_control_mode));
     diagnostics.push_back(std::string("host_strategy=") + kHostStrategyReuseOrLaunch);
     diagnostics.push_back(std::string("reuse_check=") + kReuseCheckAcadTchKernal);
     diagnostics.push_back("command=" + JoinCommandLine(plan.executable, plan.arguments));
@@ -1035,6 +1387,16 @@ ConversionResult WaitForTbatsaveDirectWorkerRelocation(
     }
 
     std::error_code error_code;
+    if (!EnsureDirectory(plan.target_path.parent_path())) {
+        diagnostics.push_back("tbatsave_direct_worker=relocation_target_parent_create_failed");
+        return FailWith(
+            ErrorCode::kSaveFailed,
+            "failed to create TBatSave direct worker target directory",
+            plan,
+            std::move(diagnostics)
+        );
+    }
+
     std::filesystem::rename(batch_target, plan.target_path, error_code);
     if (error_code) {
         error_code.clear();
@@ -1108,7 +1470,6 @@ bool LaunchProcess(const ProcessLaunchPlan& plan, PROCESS_INFORMATION& process_i
 ProcessLaunchPlan ProcessManager::BuildLaunchPlan(const CliOptions& options, const AppConfig& config) {
     ProcessLaunchPlan plan;
     const ResolvedPaths& resolved = config.resolved;
-    plan.host_control_mode = options.host_control_mode;
     plan.tbatsave_bind_mode = options.tbatsave_bind_mode;
     plan.tbatsave_bind_ref = options.tbatsave_bind_ref;
     plan.timeout_seconds = options.timeout_seconds;
@@ -1159,11 +1520,6 @@ ProcessLaunchPlan ProcessManager::BuildLaunchPlan(const CliOptions& options, con
 
     plan.executable = resolved.tgstart_exe;
     plan.arguments = {};
-    if (options.host_control_mode != HostControlMode::kNone) {
-        plan.script_path = plan.host_bootstrap_path;
-        plan.script_contents = kTbatsaveHostBootstrapMarker;
-    }
-
     return plan;
 }
 
@@ -1182,34 +1538,6 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
     auto append_diagnostics = [](ConversionResult& result, const std::vector<std::string>& diagnostics) {
         result.diagnostics.insert(result.diagnostics.end(), diagnostics.begin(), diagnostics.end());
     };
-
-    if (options.host_control_mode == HostControlMode::kStatus) {
-        ConversionResult result = MakeSuccessResult(0.0);
-        result.diagnostics = CollectCommonDiagnostics(plan);
-        append_diagnostics(result, hook_diagnostics);
-        result.diagnostics.push_back(
-            std::string("host_ready_state=") + (IsTbatsaveHostReady(plan) ? "ready" : "not_ready")
-        );
-        return result;
-    }
-
-    if (options.host_control_mode == HostControlMode::kStop) {
-        RemoveFileIfExists(plan.host_ready_path);
-        if (!WriteTextFile(plan.host_stop_path, kTbatsaveHostStopMarker)) {
-            hook_diagnostics.push_back("host_stop_requested=false");
-            return FailWith(
-                ErrorCode::kSaveFailed,
-                "failed to write TBatSave host stop marker",
-                plan,
-                std::move(hook_diagnostics)
-            );
-        }
-        ConversionResult result = MakeSuccessResult(0.0);
-        result.diagnostics = CollectCommonDiagnostics(plan);
-        append_diagnostics(result, hook_diagnostics);
-        result.diagnostics.push_back("host_stop_requested=true");
-        return result;
-    }
 
     if (!PathExists(plan.executable)) {
         return FailWith(
@@ -1230,60 +1558,7 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
     }
     std::vector<std::string> pre_launch_diagnostics = std::move(hook_diagnostics);
     RecoverHungTianzhengAcadHosts(plan, pre_launch_diagnostics);
-
-    if (options.host_control_mode == HostControlMode::kStart) {
-        RemoveFileIfExists(plan.host_stop_path);
-        if (IsTbatsaveHostReady(plan)) {
-            ConversionResult result = MakeSuccessResult(0.0);
-            result.diagnostics = CollectCommonDiagnostics(plan);
-            append_diagnostics(result, pre_launch_diagnostics);
-            result.diagnostics.push_back("host_action=reuse_ready_host");
-            return result;
-        }
-
-        RemoveFileIfExists(plan.host_ready_path);
-        WriteTextFile(plan.host_bootstrap_path, kTbatsaveHostBootstrapMarker);
-
-        const auto start_time = std::chrono::steady_clock::now();
-        std::vector<std::string> launch_diagnostics = std::move(pre_launch_diagnostics);
-        launch_diagnostics.push_back("host_action=launch_tgstart_host");
-
-        PROCESS_INFORMATION process_info{};
-        if (!LaunchProcess(plan, process_info)) {
-            return FailWith(
-                ErrorCode::kUnexpectedCrash,
-                "failed to launch TGStart.exe",
-                plan,
-                {"last_error=" + std::to_string(GetLastError())}
-            );
-        }
-
-        const auto deadline = start_time + std::chrono::seconds(options.timeout_seconds);
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (IsTbatsaveHostReady(plan)) {
-                ConversionResult result = MakeSuccessResult(
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count()
-                );
-                result.diagnostics = CollectCommonDiagnostics(plan);
-                append_diagnostics(result, launch_diagnostics);
-                CloseHandle(process_info.hThread);
-                CloseHandle(process_info.hProcess);
-                return result;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-
-        TerminateProcess(process_info.hProcess, static_cast<UINT>(ErrorCode::kLoadTimeout));
-        WaitForSingleObject(process_info.hProcess, 5000);
-        CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
-        return FailWith(
-            ErrorCode::kLoadTimeout,
-            "timed out waiting for TBatSave host ready signal",
-            plan,
-            std::move(launch_diagnostics)
-        );
-    }
+    RestartNonReadyTianzhengAcadHost(plan, pre_launch_diagnostics);
 
     if (!PathExists(options.paths.source_path)) {
         return FailWith(
@@ -1323,6 +1598,15 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
             std::move(pre_launch_diagnostics)
         );
     }
+    if (!EnsureTbatsaveStartupState(plan, pre_launch_diagnostics)) {
+        KillAllAcadProcesses(pre_launch_diagnostics);
+        return FailWith(
+            ErrorCode::kSaveFailed,
+            "failed to prepare TBatSave startup state",
+            plan,
+            std::move(pre_launch_diagnostics)
+        );
+    }
     const auto start_time = std::chrono::steady_clock::now();
     std::vector<std::string> post_launch_diagnostics = std::move(pre_launch_diagnostics);
 
@@ -1337,6 +1621,16 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
             CleanupWorkingDirectory(plan);
             return result;
         }
+        if (ShouldPreserveAcadAfterPermissionDenied(post_launch_diagnostics)) {
+            RequestTbatsaveHostStop(plan, post_launch_diagnostics);
+            CleanupWorkingDirectory(plan);
+            return BuildDirectWorkerNoUiFallbackFailureResult(
+                plan,
+                start_time,
+                std::move(post_launch_diagnostics)
+            );
+        }
+        KillAllAcadProcesses(post_launch_diagnostics);
         CleanupWorkingDirectory(plan);
         return BuildDirectWorkerNoUiFallbackFailureResult(
             plan,
@@ -1345,29 +1639,18 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
         );
     }
 
-    if (IsReusableAcadHostHealthy()) {
-        post_launch_diagnostics.push_back("host_action=reuse_acad_tbatsave");
-        if (TryRunTbatsaveDirectWorker(plan, post_launch_diagnostics)) {
-            ConversionResult result = WaitForTbatsaveDirectWorkerRelocation(
-                plan,
-                start_time,
-                std::move(post_launch_diagnostics)
-            );
-            CleanupWorkingDirectory(plan);
-            return result;
-        }
-        CleanupWorkingDirectory(plan);
-        return BuildDirectWorkerNoUiFallbackFailureResult(
-            plan,
-            start_time,
-            std::move(post_launch_diagnostics)
-        );
-    } else if (std::find(
+    if (std::find(
                    post_launch_diagnostics.begin(),
                    post_launch_diagnostics.end(),
                    "host_recovery=hung_tianzheng_acad_killed"
                ) != post_launch_diagnostics.end()) {
         post_launch_diagnostics.push_back("host_action=launch_tgstart_tbatsave_after_hung_recovery");
+    } else if (std::find(
+                   post_launch_diagnostics.begin(),
+                   post_launch_diagnostics.end(),
+                   "host_startup=non_ready_tianzheng_acad_restarted"
+               ) != post_launch_diagnostics.end()) {
+        post_launch_diagnostics.push_back("host_action=launch_tgstart_tbatsave_after_non_ready_recovery");
     } else {
         post_launch_diagnostics.push_back("host_action=launch_tgstart_tbatsave");
     }
@@ -1383,12 +1666,8 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
     }
 
     const auto host_deadline = start_time + std::chrono::seconds(options.timeout_seconds);
-    while (std::chrono::steady_clock::now() < host_deadline) {
-        if (IsTbatsaveHostReady(plan) || IsReusableAcadHostHealthy()) {
-            post_launch_diagnostics.push_back("host_action=launch_tgstart_host_ready");
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    if (WaitForTbatsaveHostReady(plan, start_time, host_deadline, post_launch_diagnostics)) {
+        post_launch_diagnostics.push_back("host_action=launch_tgstart_host_ready");
     }
 
     if (TryRunTbatsaveDirectWorker(plan, post_launch_diagnostics)) {
@@ -1402,6 +1681,19 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
         CleanupWorkingDirectory(plan);
         return direct_result;
     }
+    if (ShouldPreserveAcadAfterPermissionDenied(post_launch_diagnostics)) {
+        RequestTbatsaveHostStop(plan, post_launch_diagnostics);
+        ConversionResult result = BuildDirectWorkerNoUiFallbackFailureResult(
+            plan,
+            start_time,
+            std::move(post_launch_diagnostics)
+        );
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        CleanupWorkingDirectory(plan);
+        return result;
+    }
+    KillAllAcadProcesses(post_launch_diagnostics);
     ConversionResult result = BuildDirectWorkerNoUiFallbackFailureResult(
         plan,
         start_time,
@@ -1417,7 +1709,6 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
 std::string ProcessManager::RenderLaunchPlan(const CliOptions& options, const ProcessLaunchPlan& plan) {
     std::ostringstream stream;
     stream << "mode=tgstart_tbatsave_no_ui\n";
-    stream << "host_control=" << HostControlModeToString(plan.host_control_mode) << "\n";
     stream << "tbatsave_bind_mode=" << ToBindModeValue(plan.tbatsave_bind_mode) << "\n";
     stream << "tbatsave_bind_ref=" << plan.tbatsave_bind_ref << "\n";
     stream << "config=" << plan.config_path.string() << "\n";
@@ -1464,8 +1755,6 @@ std::string ProcessManager::RenderLaunchPlanJson(const CliOptions& options, cons
     std::ostringstream stream;
     stream << "{\n";
     stream << "  \"mode\": \"tgstart_tbatsave_no_ui\",\n";
-    stream << "  \"host_control\": \"" << EscapeJson(HostControlModeToString(plan.host_control_mode))
-           << "\",\n";
     stream << "  \"tbatsave_bind_mode\": " << ToBindModeValue(plan.tbatsave_bind_mode) << ",\n";
     stream << "  \"tbatsave_bind_ref\": " << plan.tbatsave_bind_ref << ",\n";
     stream << "  \"config\": \"" << EscapeJson(plan.config_path.string()) << "\",\n";

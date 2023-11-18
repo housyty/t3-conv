@@ -22,6 +22,8 @@ namespace t3conv {
 
 namespace {
 
+constexpr int kMaxHostRestartsPerBatch = 5;
+
 struct ChildRun {
     int exit_code = 99;
     bool timed_out = false;
@@ -364,7 +366,9 @@ std::filesystem::path WriteBatchLog(
 void AppendBatchSummaryToLog(
     const CliOptions& options,
     const std::vector<BatchRow>& rows,
-    double total_seconds
+    double total_seconds,
+    int host_restart_count,
+    bool batch_aborted
 ) {
     int success_count = 0;
     for (const BatchRow& row : rows) {
@@ -386,6 +390,11 @@ void AppendBatchSummaryToLog(
         "failed=" + std::to_string(failed_count),
         "total_seconds=" + FormatSeconds(total_seconds),
         "avg_seconds=" + FormatSeconds(avg_seconds),
+        "host_restart_count=" + std::to_string(host_restart_count),
+        "host_restart_limit=" + std::to_string(kMaxHostRestartsPerBatch),
+        std::string("host_restart_limit_exceeded=") +
+            (batch_aborted ? "true" : "false"),
+        std::string("batch_aborted=") + (batch_aborted ? "true" : "false"),
         "================================================================================"
     };
     AppendLines(log_path, lines);
@@ -434,8 +443,10 @@ int BatchRunner::Execute(
     const auto files = EnumerateDwgs(options.paths.source_path);
     std::vector<BatchRow> final_rows;
     const auto total_start = std::chrono::steady_clock::now();
+    int host_restart_count = 0;
+    bool batch_aborted = false;
 
-    for (size_t index = 0; index < files.size(); ++index) {
+    for (size_t index = 0; index < files.size() && !batch_aborted; ++index) {
         const std::filesystem::path source = files[index];
         const std::filesystem::path target = BatchTargetPath(source, output_dir);
         BatchRow last_row;
@@ -489,7 +500,13 @@ int BatchRunner::Execute(
                 break;
             }
             if (ShouldRestartHostAfterFailure(child, last_row)) {
+                if (host_restart_count >= kMaxHostRestartsPerBatch) {
+                    batch_aborted = true;
+                    std::cout << "host_restart_limit_exceeded=true\n";
+                    break;
+                }
                 StopTianzhengAcad();
+                ++host_restart_count;
             }
         }
 
@@ -498,13 +515,22 @@ int BatchRunner::Execute(
 
     const auto total_stop = std::chrono::steady_clock::now();
     const double total_seconds = std::chrono::duration<double>(total_stop - total_start).count();
-    AppendBatchSummaryToLog(options, final_rows, total_seconds);
+    AppendBatchSummaryToLog(
+        options,
+        final_rows,
+        total_seconds,
+        host_restart_count,
+        batch_aborted
+    );
 
     const bool all_success = std::all_of(final_rows.begin(), final_rows.end(), [](const BatchRow& row) {
         return row.success;
     });
     std::cout << "status=" << (all_success ? "success" : "failure") << "\n";
     std::cout << "total=" << final_rows.size() << "\n";
+    if (batch_aborted) {
+        std::cout << "batch_aborted=host_restart_limit_exceeded\n";
+    }
     return all_success ? 0 : static_cast<int>(ErrorCode::kSaveFailed);
 }
 

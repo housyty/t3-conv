@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($BuildDir)) {
     $BuildDir = Join-Path $ProjectParent "_build\t3-conv-release"
 }
 if ([string]::IsNullOrWhiteSpace($DistDir)) {
-    $DistDir = Join-Path $ProjectParent "dist"
+    $DistDir = Join-Path $ProjectRoot "release"
 }
 
 $PackageName = "t3-conv"
@@ -22,6 +22,39 @@ $StageRoot = Join-Path $DistDir ("." + $PackageName + "-stage")
 $PackageRoot = Join-Path $StageRoot $PackageName
 $ZipPath = Join-Path $DistDir $ZipName
 $ExePath = Join-Path $BuildDir "src\t3conv\$Configuration\t3conv.exe"
+
+function Test-PathInside {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Parent
+    )
+
+    $FullPath = [System.IO.Path]::GetFullPath($Path)
+    $FullParent = [System.IO.Path]::GetFullPath($Parent)
+    if (-not $FullParent.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $FullParent = $FullParent + [System.IO.Path]::DirectorySeparatorChar
+    }
+    return $FullPath.StartsWith($FullParent, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Remove-DirectoryIfSafe {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Parent
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    if (-not (Test-PathInside -Path $Path -Parent $Parent)) {
+        throw "refusing to remove directory outside expected parent: $Path"
+    }
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
 
 function Invoke-CmakeChecked {
     param(
@@ -45,7 +78,7 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
 }
 
 if (Test-Path -LiteralPath $StageRoot) {
-    Remove-Item -LiteralPath $StageRoot -Recurse -Force
+    Remove-DirectoryIfSafe -Path $StageRoot -Parent $DistDir
 }
 New-Item -ItemType Directory -Path $PackageRoot | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $PackageRoot "runtime\tgstart_host") | Out-Null
@@ -99,8 +132,8 @@ Default `t3conv.ini` can remain fully commented. If auto-detection fails, set:
 
 ````ini
 [paths]
-tangent_root=C:\path\to\TArchT20V9
-autocad_root=C:\Program Files\Autodesk\AutoCAD 2020
+;tangent_root=C:\path\to\TArchT20V9
+;autocad_root=C:\Program Files\Autodesk\AutoCAD 2020
 
 [fonts]
 fontalt=HZTXT.SHX
@@ -115,6 +148,9 @@ if (Test-Path -LiteralPath $ZipPath) {
     Remove-Item -LiteralPath $ZipPath -Force
 }
 Compress-Archive -LiteralPath $PackageRoot -DestinationPath $ZipPath -Force
-Remove-Item -LiteralPath $StageRoot -Recurse -Force
+Remove-DirectoryIfSafe -Path $StageRoot -Parent $DistDir
+if (-not $SkipBuild) {
+    Remove-DirectoryIfSafe -Path $BuildDir -Parent $ProjectParent
+}
 
 Write-Host "package=$ZipPath"

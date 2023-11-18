@@ -163,22 +163,6 @@ std::string ErrorCodeToString(ErrorCode error_code) {
 }
 
 
-std::string HostControlModeToString(HostControlMode host_control_mode) {
-    switch (host_control_mode) {
-        case HostControlMode::kNone:
-            return "none";
-        case HostControlMode::kStart:
-            return "start";
-        case HostControlMode::kStatus:
-            return "status";
-        case HostControlMode::kStop:
-            return "stop";
-    }
-
-    return "unknown";
-}
-
-
 std::string QuoteCommandArg(const std::string& value) {
     std::string escaped = value;
     std::string::size_type pos = 0;

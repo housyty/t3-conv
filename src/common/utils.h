@@ -30,7 +30,6 @@ bool EnsureDirectory(const std::filesystem::path& path);
 std::filesystem::path PrepareAppendLogPath(const std::filesystem::path& base_log_path);
 std::string ToLowerAscii(std::string value);
 std::string ErrorCodeToString(ErrorCode error_code);
-std::string HostControlModeToString(HostControlMode host_control_mode);
 std::string QuoteCommandArg(const std::string& value);
 std::string QuoteCommandArg(const std::filesystem::path& value);
 std::string JoinCommandLine(

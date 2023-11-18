@@ -591,7 +591,7 @@ output_path: string      可选，默认 <source_dir>\<source_stem>_t3.dwg
 tianzheng_version: enum  当前固定 T3
 cad_version: enum        当前固定 ACAD2004
 overwrite: bool          默认 true
-timeout_ms: uint32       默认 60000
+timeout_ms: uint32       默认 120000
 ```
 
 ### 单文件转换响应

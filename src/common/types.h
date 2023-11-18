@@ -27,13 +27,6 @@ enum class TbatsaveBindMode : int {
     kCustom = 2,
 };
 
-enum class HostControlMode {
-    kNone,
-    kStart,
-    kStatus,
-    kStop,
-};
-
 struct ConversionPaths {
     std::filesystem::path source_path;
     std::filesystem::path target_path;
@@ -81,7 +74,6 @@ struct AppConfig {
 
 struct CliOptions {
     ConversionPaths paths;
-    HostControlMode host_control_mode = HostControlMode::kNone;
     TbatsaveBindMode tbatsave_bind_mode = TbatsaveBindMode::kKeepDefault;
     int tbatsave_bind_ref = -1;
     int timeout_seconds = 120;
@@ -93,7 +85,6 @@ struct CliOptions {
 };
 
 struct ProcessLaunchPlan {
-    HostControlMode host_control_mode = HostControlMode::kNone;
     std::filesystem::path executable;
     std::filesystem::path target_path;
     std::filesystem::path log_path;

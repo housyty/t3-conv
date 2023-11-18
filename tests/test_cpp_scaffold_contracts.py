@@ -35,15 +35,27 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.expected_tangent_root = Path(
             os.environ.get(
                 "T3CONV_TEST_TANGENT_ROOT",
-                self.workspace_root.parent / "TArchT20V9",
+                self.test_temp_root / "TArchT20V9",
             )
         )
+        self.expected_autocad_root = Path(
+            os.environ.get(
+                "T3CONV_TEST_AUTOCAD_ROOT",
+                self.test_temp_root / "AutoCAD 2020",
+            )
+        )
+        (self.expected_tangent_root / "SYS").mkdir(parents=True, exist_ok=True)
+        (self.expected_tangent_root / "TGStart.exe").touch()
+        (self.expected_autocad_root / "Fonts").mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
         self._temp_dir.cleanup()
 
     def run_exe(self, *args: str) -> subprocess.CompletedProcess[str]:
         command = [str(self.exe), *args]
+        env = os.environ.copy()
+        env.setdefault("T3CONV_TANGENT_ROOT", str(self.expected_tangent_root))
+        env.setdefault("T3CONV_AUTOCAD_ROOT", str(self.expected_autocad_root))
         try:
             return subprocess.run(
                 command,
@@ -51,6 +63,7 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
                 text=True,
                 check=False,
                 timeout=self.EXE_TIMEOUT_SECONDS,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             self.fail(
@@ -78,6 +91,39 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         ]
         self.assertEqual([], active_settings)
 
+    def test_tangent_root_auto_detection_checks_common_valid_install_locations(self):
+        config_loader = (self.workspace_root / "src/t3conv/config_loader.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("T3CONV_TANGENT_ROOT", config_loader)
+        self.assertIn("CommonTangentRootCandidates", config_loader)
+        self.assertIn("FindFirstValidTangentRoot", config_loader)
+        self.assertIn("IsValidTangentRootCandidate", config_loader)
+        self.assertIn("ProgramFiles", config_loader)
+        self.assertIn("ProgramFiles(x86)", config_loader)
+        self.assertIn("SystemDrive", config_loader)
+        self.assertIn('"TGStart.exe"', config_loader)
+        self.assertIn('"SYS"', config_loader)
+        self.assertIn('"TArchT20V9"', config_loader)
+        self.assertIn('"TArchT20V9.0"', config_loader)
+        self.assertIn('"T20V9"', config_loader)
+        self.assertIn("AddDriveTangentRootCandidates", config_loader)
+        self.assertIn("AddWorkspaceTangentCandidates", config_loader)
+        self.assertIn("AddDriveRootTangentCandidates", config_loader)
+        self.assertIn("AddProgramFilesTangentCandidates", config_loader)
+        self.assertLess(
+            config_loader.index("AddDriveTangentRootCandidates(candidates, drive_roots)"),
+            config_loader.index("AddWorkspaceTangentCandidates(candidates, workspace_root)")
+        )
+        self.assertLess(
+            config_loader.index("AddWorkspaceTangentCandidates(candidates, workspace_root)"),
+            config_loader.index("AddDriveRootTangentCandidates(candidates, drive_roots)")
+        )
+        self.assertLess(
+            config_loader.index("AddDriveRootTangentCandidates(candidates, drive_roots)"),
+            config_loader.index("AddProgramFilesTangentCandidates(candidates)")
+        )
+        self.assertNotIn("FindFirstExistingDirectory(candidates)", config_loader)
+
     def test_help_output_only_mentions_current_flags(self):
         completed = self.run_exe("--help")
 
@@ -87,11 +133,11 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn("-o <path>", completed.stdout)
         self.assertIn("-d, --debug", completed.stdout)
         self.assertIn("--retries <n>", completed.stdout)
-        self.assertIn("--host-start", completed.stdout)
-        self.assertIn("--host-status", completed.stdout)
-        self.assertIn("--host-stop", completed.stdout)
         self.assertIn("--tbatsave-bindmode", completed.stdout)
-        self.assertLess(completed.stdout.index("--json"), completed.stdout.index("--host-start"))
+        self.assertNotIn("--host-start", completed.stdout)
+        self.assertNotIn("--host-stop", completed.stdout)
+        self.assertNotIn("--host-status", completed.stdout)
+        self.assertLess(completed.stdout.index("--json"), completed.stdout.index("--tbatsave-bindmode"))
         self.assertIn("--dry-run", completed.stdout)
         self.assertNotIn("--runtime", completed.stdout)
         self.assertNotIn("--tbatsave-experimental", completed.stdout)
@@ -240,6 +286,48 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn('"t3conv.log"', args_parser)
         self.assertIn("result.config.resolved.workspace_root / \"t3conv.log\"", args_parser)
 
+    def test_real_conversion_self_elevates_without_java_caller_changes(self):
+        main = (self.workspace_root / "src/t3conv/main.cpp").read_text(encoding="utf-8")
+        cmake = (self.workspace_root / "src/t3conv/CMakeLists.txt").read_text(encoding="utf-8")
+
+        self.assertIn("IsCurrentProcessElevated", main)
+        self.assertIn("RelaunchElevatedAndWait", main)
+        self.assertIn("ShellExecuteExW", main)
+        self.assertIn("shell_execute_info.lpVerb = L\"runas\"", main)
+        self.assertIn("SEE_MASK_NOCLOSEPROCESS", main)
+        self.assertIn("shell_execute_info.nShow = SW_HIDE", main)
+        self.assertIn("WaitForSingleObject(shell_execute_info.hProcess, INFINITE)", main)
+        self.assertIn("GetExitCodeProcess(shell_execute_info.hProcess", main)
+        self.assertIn("OpenProcessToken(GetCurrentProcess()", main)
+        self.assertIn("CheckTokenMembership", main)
+        self.assertIn("T3CONV_ELEVATION_ATTEMPTED", main)
+        self.assertIn("--internal-stdout", main)
+        self.assertIn("--internal-stderr", main)
+        self.assertIn("--internal-tangent-root", main)
+        self.assertIn("--internal-autocad-root", main)
+        self.assertIn("RedirectInternalOutputFiles(parse_result)", main)
+        self.assertIn("ReplayAndRemoveInternalOutput", main)
+        self.assertIn("ShouldSelfElevateForConversion(parse_result)", main)
+        self.assertLess(
+            main.index("if (parse_result.show_help)"),
+            main.index("ShouldSelfElevateForConversion(parse_result)")
+        )
+        self.assertLess(
+            main.index("if (parse_result.options.dry_run)"),
+            main.index("ProcessManager::Execute")
+        )
+        self.assertLess(
+            main.index("ShouldSelfElevateForConversion(parse_result)"),
+            main.index("BatchRunner::Execute")
+        )
+        self.assertLess(
+            main.index("ShouldSelfElevateForConversion(parse_result)"),
+            main.index("ProcessManager::Execute")
+        )
+        self.assertIn("shell32", cmake)
+        self.assertIn("advapi32", cmake)
+        self.assertNotIn("MANIFESTUAC:level='requireAdministrator'", cmake)
+
     def test_single_and_batch_logs_roll_under_log_folder_with_fixed_retention(self):
         utils_h = (self.workspace_root / "src/common/utils.h").read_text(encoding="utf-8")
         utils_cpp = (self.workspace_root / "src/common/utils.cpp").read_text(encoding="utf-8")
@@ -268,25 +356,22 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn('"invocation"', completed.stdout)
         self.assertNotIn('"probe_mode"', completed.stdout)
 
-    def test_host_control_dry_runs_render_host_paths(self):
-        for flag, state in [
-            ("--host-start", "start"),
-            ("--host-status", "status"),
-            ("--host-stop", "stop"),
-        ]:
-            with self.subTest(flag=flag):
-                completed = self.run_exe("--dry-run", flag)
-                self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertIn(f"host_control={state}", completed.stdout)
-                self.assertIn(f"host_ready={norm(self.workspace_root / 'var/host/host_ready.txt')}", completed.stdout)
-                self.assertIn(f"host_stop={norm(self.workspace_root / 'var/host/host_stop.txt')}", completed.stdout)
-                self.assertIn(f'command="{norm(self.expected_tangent_root / "TGStart.exe")}"', completed.stdout)
+    def test_host_control_is_not_public_cli(self):
+        args_parser = (self.workspace_root / "src/t3conv/args_parser.cpp").read_text(encoding="utf-8")
+        types = (self.workspace_root / "src/common/types.h").read_text(encoding="utf-8")
+        readme = (self.workspace_root / "README.md").read_text(encoding="utf-8")
+        readme_zh = (self.workspace_root / "README.zh-CN.md").read_text(encoding="utf-8")
 
-    def test_host_control_dry_run_script_contents_ends_with_newline(self):
-        completed = self.run_exe("--dry-run", "--host-start")
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertTrue(completed.stdout.endswith("script_contents:\nBOOTSTRAP\n"), completed.stdout)
+        for text in [args_parser, types, readme, readme_zh]:
+            self.assertNotIn("--host-start", text)
+            self.assertNotIn("--host-stop", text)
+            self.assertNotIn("--host-status", text)
+        self.assertNotIn("HostControlMode::kStart", args_parser)
+        self.assertNotIn("HostControlMode::kStop", args_parser)
+        self.assertNotIn("HostControlMode::kStatus", args_parser)
+        self.assertNotIn("kStart", types)
+        self.assertNotIn("kStop", types)
+        self.assertNotIn("kStatus", types)
 
     def test_source_directory_and_build_path_use_t3conv_name(self):
         self.assertTrue((self.workspace_root / "src/t3conv").exists())
@@ -316,12 +401,76 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
 
         self.assertIn("EnsureTbatsaveHostStartupHook", source)
         self.assertIn("NormalizeTbatsaveHostStartupHook", source)
+        self.assertIn("EnsureTbatsaveStartupState", source)
         self.assertIn("tangent.mnl", source)
         self.assertIn("tangent_mnl_bridge.runtime.lsp", source)
         self.assertIn("IsManagedTbatsaveBridgeLoadLine", source)
         self.assertIn("tangent_mnl_bridge.lsp", source)
         self.assertIn("host_hook=normalized_mnl", source)
         self.assertIn("host_hook=already_normalized", source)
+        self.assertIn("host_hook=mnl_created", source)
+        self.assertNotIn('diagnostics.push_back("host_hook=mnl_missing");\n        return false;', source)
+
+    def test_conversion_startup_self_check_repairs_host_markers(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+        execute_body = source[source.index("ConversionResult ProcessManager::Execute"):]
+
+        self.assertIn("EnsureTbatsaveStartupState(plan, pre_launch_diagnostics)", source)
+        self.assertIn("RemoveFileIfExists(plan.host_ready_path)", source)
+        self.assertIn("RemoveFileIfExists(plan.worker_status_path)", source)
+        self.assertIn("WriteTextFile(plan.host_bootstrap_path, kTbatsaveHostBootstrapMarker)", source)
+        self.assertIn("host_startup=bootstrap_written", source)
+        self.assertLess(
+            execute_body.index("EnsureTbatsaveStartupState(plan, pre_launch_diagnostics)"),
+            execute_body.index("if (IsTbatsaveHostReady(plan))")
+        )
+
+    def test_conversion_startup_self_check_disables_tianzheng_start_dialog(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+        startup_body = source[source.index("bool EnsureTbatsaveStartupState"):]
+        startup_body = startup_body[:startup_body.index("std::optional<uintptr_t> FindModuleBaseAddress")]
+
+        self.assertIn("EnsureTianzhengStartupDialogDisabled(plan, diagnostics)", startup_body)
+        self.assertIn("NormalizeTianzhengStartupIni", source)
+        self.assertIn("EnsureIniSection", source)
+        self.assertIn('ReadWholeFile(ini_path).value_or("")', source)
+        self.assertIn("ShowStartDlg=0", source)
+        self.assertIn('"Startup"', source)
+        self.assertIn('"tch.ini"', source)
+        self.assertIn('lines.push_back("[" + section + "]")', source)
+        self.assertIn('lines.push_back("ShowStartDlg=0")', source)
+        self.assertIn('lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index), "ShowStartDlg=0")', source)
+        self.assertIn("host_startup_dialog=already_disabled", source)
+        self.assertIn("host_startup_dialog=disabled", source)
+        self.assertIn("host_startup_dialog=write_failed", source)
+        self.assertLess(
+            startup_body.index("EnsureTianzhengStartupDialogDisabled(plan, diagnostics)"),
+            startup_body.index("WriteTextFile(plan.host_bootstrap_path")
+        )
+
+    def test_conversion_launch_waits_for_live_tianzheng_host_not_only_ready_file(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("WaitForTbatsaveHostReady(plan, start_time, host_deadline, post_launch_diagnostics)", source)
+        self.assertIn("host_ready_file=present_without_tianzheng_process", source)
+        self.assertIn("host_ready_file=present_with_tianzheng_process", source)
+        self.assertIn("CountAcadProcessesByName", source)
+        self.assertIn("HasAcadProcessDenyingDirectWorkerAccess", source)
+        self.assertIn("host_process_access=denied", source)
+        self.assertNotIn("while (std::chrono::steady_clock::now() < host_deadline) {\n        if (IsTbatsaveHostReady(plan))", source)
+
+    def test_startup_bridge_immediately_attempts_runtime_load(self):
+        bridge = (self.workspace_root / "runtime/tgstart_host/tangent_mnl_bridge.lsp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("t3conv:tbx-host-loader", bridge)
+        self.assertIn("TBatSave tangent.mnl bridge immediate self-check", bridge)
+        self.assertIn("(t3conv:tbx-host-loader)", bridge)
+        self.assertLess(
+            bridge.rindex("TBatSave tangent.mnl bridge immediate self-check"),
+            bridge.rindex("(t3conv:tbx-host-loader)")
+        )
 
     def test_process_manager_uses_direct_worker_without_ui_command_fallback(self):
         source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
@@ -345,6 +494,14 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn("host_action=launch_tgstart_host_ready", source)
         self.assertIn("RemoveFileIfExists(plan.worker_status_path)", source)
 
+    def test_process_manager_restarts_non_ready_tianzheng_host(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("RestartNonReadyTianzhengAcadHost", source)
+        self.assertIn("host_startup=non_ready_tianzheng_acad_restarted", source)
+        self.assertIn("host_action=launch_tgstart_tbatsave_after_non_ready_recovery", source)
+        self.assertNotIn("host_action=reuse_acad_tbatsave", source)
+
     def test_runtime_patch_exposes_verified_direct_worker_contract(self):
         header = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.h").read_text(encoding="utf-8")
         source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
@@ -362,6 +519,22 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn("plan.timeout_seconds = options.timeout_seconds;", process_mgr)
         self.assertIn("plan.timeout_seconds", source)
         self.assertNotIn("kTbatsaveDirectWorkerWaitMilliseconds = 60000", source)
+
+    def test_direct_worker_selects_tianzheng_acad_process(self):
+        source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
+        worker_body = source[source.index("bool TryRunTbatsaveDirectWorker"):]
+        worker_body = worker_body[:worker_body.index("bool EnsureTbatsaveRuntimePatchSession")]
+
+        self.assertIn("FindNewestTianzhengAcadProcess", source)
+        self.assertIn("CountAcadProcesses()", source)
+        self.assertIn("CountAcadProcessesDenyingDirectWorkerAccess()", source)
+        self.assertIn("tbatsave_direct_worker=acad_access_denied", source)
+        self.assertIn("tbatsave_direct_worker_hint=run_t3conv_elevated", source)
+        self.assertIn("tbatsave_direct_worker=acad_not_found", source)
+        self.assertIn("tbatsave_direct_worker=tch_kernal_not_loaded", source)
+        self.assertIn("tbatsave_direct_worker_selected_pid=", worker_body)
+        self.assertIn("tbatsave_direct_worker_tch_kernal=", worker_body)
+        self.assertNotIn('FindNewestProcessIdByName(L"acad.exe")', worker_body)
 
     def test_runtime_patch_keeps_verified_direct_worker_rvas(self):
         source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
@@ -414,6 +587,55 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn("TBatSave-num", trigger)
         self.assertNotIn("PLDC", trigger)
 
+    def test_host_runtime_waits_for_tch_kernal_before_ready_marker(self):
+        trigger = (self.workspace_root / "runtime/tgstart_host/tbatsave_experimental_trigger.lsp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("_tbx-tch-kernal-loaded-p", trigger)
+        self.assertIn("_tbx-wait-for-tch-kernal", trigger)
+        self.assertIn("tch_kernal.arx", trigger)
+        self.assertIn("host ready deferred until tch_kernal", trigger)
+        self.assertLess(
+            trigger.index("(_tbx-wait-for-tch-kernal)"),
+            trigger.index("(_tbx-write-host-ready)")
+        )
+
+    def test_host_runtime_marks_ready_and_returns_without_blocking_tianzheng_ui(self):
+        trigger = (self.workspace_root / "runtime/tgstart_host/tbatsave_experimental_trigger.lsp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("host ready; returning control to AutoCAD", trigger)
+        self.assertIn("_tbx-host-stop-requested-p", trigger)
+        self.assertNotIn("(while (not (_tbx-host-stop-requested-p))", trigger)
+        self.assertNotIn("host loop stop marker detected", trigger)
+        self.assertNotIn("_tbx-host-keepalive-requested-p", trigger)
+        self.assertNotIn("host loop skipped for one-shot startup", trigger)
+        self.assertLess(
+            trigger.index("(_tbx-write-host-ready)"),
+            trigger.index("host ready; returning control to AutoCAD")
+        )
+
+    def test_ordinary_conversion_cleanup_distinguishes_permission_from_host_faults(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+        ordinary_start = source.index("if (!EnsureTbatsaveStartupState(plan, pre_launch_diagnostics))")
+        ordinary_body = source[ordinary_start:source.index("std::string ProcessManager::RenderLaunchPlan", ordinary_start)]
+
+        self.assertIn("KillAllAcadProcesses", source)
+        self.assertIn("RequestTbatsaveHostStop", source)
+        self.assertIn("ShouldPreserveAcadAfterPermissionDenied", source)
+        self.assertIn("host_cleanup=kill_all_acad_on_problem", source)
+        self.assertIn("host_cleanup=stop_requested_after_permission_denied", source)
+        self.assertIn("host_cleanup_killed_count=", source)
+        self.assertGreaterEqual(ordinary_body.count("KillAllAcadProcesses("), 3)
+        self.assertIn("if (ShouldPreserveAcadAfterPermissionDenied(post_launch_diagnostics))", ordinary_body)
+        self.assertNotIn("} else {\n        KillAllAcadProcesses(post_launch_diagnostics);\n    }", ordinary_body)
+        self.assertLess(
+            ordinary_body.index("RequestTbatsaveHostStop(plan, post_launch_diagnostics)"),
+            ordinary_body.index("BuildDirectWorkerNoUiFallbackFailureResult")
+        )
+
     def test_batch_runner_is_integrated_into_t3conv_exe(self):
         cmake = (self.workspace_root / "src/t3conv/CMakeLists.txt").read_text(encoding="utf-8")
         header = (self.workspace_root / "src/t3conv/batch_runner.h").read_text(encoding="utf-8")
@@ -421,6 +643,7 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         main = (self.workspace_root / "src/t3conv/main.cpp").read_text(encoding="utf-8")
 
         self.assertIn("batch_runner.cpp", cmake)
+        self.assertNotIn("MANIFESTUAC:level='requireAdministrator'", cmake)
         self.assertIn("class BatchRunner", header)
         self.assertIn("IsBatchRequest", header)
         self.assertIn("BatchRunner::Execute", source)
@@ -472,6 +695,47 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn("C:\\Program Files\\Autodesk\\AutoCAD 2020", source)
         self.assertNotIn("C:\\Tangent\\TArchT20V9", source)
 
+    def test_batch_runner_caps_host_restarts_per_run(self):
+        source = (self.workspace_root / "src/t3conv/batch_runner.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("kMaxHostRestartsPerBatch = 5", source)
+        self.assertIn("host_restart_count", source)
+        self.assertIn("host_restart_limit=", source)
+        self.assertIn("host_restart_limit_exceeded=true", source)
+        self.assertIn("batch_aborted=", source)
+        self.assertIn("if (host_restart_count >= kMaxHostRestartsPerBatch)", source)
+        self.assertLess(
+            source.index("if (host_restart_count >= kMaxHostRestartsPerBatch)"),
+            source.index("StopTianzhengAcad();")
+        )
+        self.assertNotIn("--max-host-restarts", source)
+
+    def test_real_conversions_are_serialized_by_tangent_root_mutex(self):
+        main = (self.workspace_root / "src/t3conv/main.cpp").read_text(encoding="utf-8")
+        args_parser = (self.workspace_root / "src/t3conv/args_parser.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("BuildConversionMutexName", main)
+        self.assertIn("T3CONV_CONVERSION_LOCK_HELD", main)
+        self.assertIn("CreateMutexW", main)
+        self.assertIn("WaitForSingleObject(handle_, INFINITE)", main)
+        self.assertIn("ReleaseMutex(handle_)", main)
+        self.assertIn("parse_result.config.resolved.tangent_root", main)
+        self.assertIn("Acquire(parse_result.config.resolved.tangent_root)", main)
+        self.assertLess(
+            main.index("ShouldSelfElevateForConversion(parse_result)"),
+            main.index("Acquire(parse_result.config.resolved.tangent_root)")
+        )
+        self.assertLess(
+            main.index("Acquire(parse_result.config.resolved.tangent_root)"),
+            main.index("BatchRunner::Execute")
+        )
+        self.assertLess(
+            main.index("Acquire(parse_result.config.resolved.tangent_root)"),
+            main.index("ProcessManager::Execute")
+        )
+        self.assertNotIn("--lock", args_parser)
+        self.assertNotIn("--mutex", args_parser)
+
     def test_font_logic_syncs_only_project_fonts_to_autocad_fonts(self):
         source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
 
@@ -486,6 +750,15 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn('"t3conv_fontmap.fmp"', source)
         self.assertNotIn("paths.push_back(plan.font_dir)", source)
         self.assertNotIn('paths.push_back(plan.tarch_root / "SYS")', source)
+
+    def test_direct_worker_relocation_creates_target_parent_directory(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("EnsureDirectory(plan.target_path.parent_path())", source)
+        self.assertLess(
+            source.index("EnsureDirectory(plan.target_path.parent_path())"),
+            source.index("std::filesystem::rename(batch_target, plan.target_path")
+        )
 
     def test_config_loader_derives_paths_from_ini(self):
         source = (self.workspace_root / "src/t3conv/config_loader.cpp").read_text(encoding="utf-8")
@@ -513,13 +786,18 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         source = script.read_text(encoding="utf-8")
 
         self.assertIn('ZipName = "t3-conv.zip"', source)
-        self.assertIn('Join-Path $ProjectParent "dist"', source)
+        self.assertIn('Join-Path $ProjectRoot "release"', source)
+        self.assertNotIn('Join-Path $ProjectParent "dist"', source)
         self.assertIn("t3conv.exe", source)
         self.assertIn("t3conv.ini", source)
         self.assertIn("runtime", source)
         self.assertIn("fonts", source)
         self.assertIn("Compress-Archive", source)
         self.assertIn("function Invoke-CmakeChecked", source)
+        self.assertIn("function Remove-DirectoryIfSafe", source)
+        self.assertIn("Remove-DirectoryIfSafe -Path $StageRoot", source)
+        self.assertIn("Remove-DirectoryIfSafe -Path $BuildDir", source)
+        self.assertIn("if (-not $SkipBuild)", source)
         self.assertIn("${LASTEXITCODE}", source)
         self.assertNotIn("| Write-Host", source)
         self.assertNotIn("var\\runtime", source)
@@ -564,8 +842,6 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         ]:
             self.assertIn(token, guide)
 
-        self.assertLess(readme.index('Convert one DWG with the minimum arguments'), readme.index('--host-start'))
-        self.assertLess(readme_zh.index('用最少参数转换单个 DWG'), readme_zh.index('--host-start'))
         self.assertIn("positional source path", readme)
         self.assertIn("位置参数", readme_zh)
         self.assertIn("AutoCAD 2020-2026", readme)
@@ -578,12 +854,35 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn(".\\t3conv.exe --host-status", readme_zh)
         self.assertNotIn(".\\t3conv.exe --host-stop", readme_zh)
         self.assertNotIn(".\\t3conv.exe --host-start", readme_zh)
+        self.assertNotIn("--host-stop", readme)
+        self.assertNotIn("--host-start", readme)
+        self.assertNotIn("--host-status", readme)
+        self.assertNotIn("--host-stop", readme_zh)
+        self.assertNotIn("--host-start", readme_zh)
+        self.assertNotIn("--host-status", readme_zh)
         self.assertNotIn("render runtime LSP", readme)
         self.assertNotIn("normalize the minimal SYS/tangent.mnl bridge entry", readme)
         self.assertNotIn("渲染 runtime LSP", readme_zh)
         self.assertNotIn("规范化 SYS/tangent.mnl", readme_zh)
         self.assertNotIn("tgstart_host_runtime_layout.md", readme)
         self.assertNotIn("tgstart_host_runtime_layout.md", readme_zh)
+
+    def test_direct_worker_fails_fast_when_acad_process_access_is_denied(self):
+        source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
+        wait_start = source.index("std::optional<TianzhengAcadProcess> WaitForNewestTianzhengAcadProcess")
+        wait_body = source[wait_start:source.index("\n}\n\n}  // namespace", wait_start)]
+
+        self.assertIn("TryDiagnoseDirectWorkerAccessDenied", source)
+        self.assertIn("const bool should_fail_fast", source)
+        self.assertIn("return std::nullopt;", wait_body)
+        self.assertLess(
+            wait_body.index("TryDiagnoseDirectWorkerAccessDenied(diagnostics)"),
+            wait_body.index("Sleep(500);")
+        )
+        self.assertLess(
+            wait_body.index("TryDiagnoseDirectWorkerAccessDenied(diagnostics)"),
+            wait_body.index("diagnostics.push_back(\"tbatsave_direct_worker=tch_kernal_not_loaded\")")
+        )
 
     def test_production_sources_do_not_reference_removed_paths(self):
         source_roots = [

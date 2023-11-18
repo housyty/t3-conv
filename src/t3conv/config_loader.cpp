@@ -4,6 +4,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -148,12 +149,72 @@ std::optional<std::filesystem::path> FindFirstExistingDirectory(
 }
 
 
+std::filesystem::path AbsoluteLexicallyNormal(std::filesystem::path path) {
+    std::error_code error_code;
+    path = std::filesystem::absolute(path, error_code).lexically_normal();
+    if (error_code) {
+        path = path.lexically_normal();
+    }
+    return path;
+}
+
+
+std::vector<std::filesystem::path> AncestorDirectories(std::filesystem::path start) {
+    std::vector<std::filesystem::path> directories;
+    start = AbsoluteLexicallyNormal(start);
+
+    std::filesystem::path cursor = start;
+    while (!cursor.empty()) {
+        directories.push_back(cursor);
+        const std::filesystem::path parent = cursor.parent_path();
+        if (parent == cursor) {
+            break;
+        }
+        cursor = parent;
+    }
+    return directories;
+}
+
+
 std::filesystem::path EnvPath(const char* name) {
     const char* value = std::getenv(name);
     if (value == nullptr || std::string(value).empty()) {
         return {};
     }
     return std::filesystem::path(value).lexically_normal();
+}
+
+
+std::filesystem::path SystemDriveRoot() {
+    std::filesystem::path system_drive = EnvPath("SystemDrive");
+    if (system_drive.empty()) {
+        return {};
+    }
+
+    const std::wstring drive = system_drive.wstring();
+    if (drive.size() == 2 && drive[1] == L':') {
+        return std::filesystem::path(drive + L"\\");
+    }
+    return system_drive;
+}
+
+
+std::vector<std::filesystem::path> FixedDriveRoots() {
+    std::vector<std::filesystem::path> roots;
+    const DWORD drive_mask = GetLogicalDrives();
+    for (wchar_t letter = L'A'; letter <= L'Z'; ++letter) {
+        const DWORD bit = 1UL << (letter - L'A');
+        if ((drive_mask & bit) == 0) {
+            continue;
+        }
+
+        wchar_t root[] = L"A:\\";
+        root[0] = letter;
+        if (GetDriveTypeW(root) == DRIVE_FIXED) {
+            roots.emplace_back(root);
+        }
+    }
+    return roots;
 }
 
 
@@ -182,6 +243,112 @@ std::string BuildAutocadVersionDirectoryName(int year) {
 }
 
 
+void AddTangentNameCandidates(
+    std::vector<std::filesystem::path>& candidates,
+    const std::filesystem::path& base
+) {
+    if (base.empty()) {
+        return;
+    }
+
+    for (const std::string& name : {"TArchT20V9", "TArchT20V9.0", "T20V9"}) {
+        candidates.push_back((base / name).lexically_normal());
+    }
+}
+
+
+void AddTangentCommonBaseCandidates(
+    std::vector<std::filesystem::path>& candidates,
+    const std::filesystem::path& base
+) {
+    if (base.empty()) {
+        return;
+    }
+
+    AddTangentNameCandidates(candidates, base / "Tangent");
+    AddTangentNameCandidates(candidates, base);
+}
+
+
+void AddDriveTangentRootCandidates(
+    std::vector<std::filesystem::path>& candidates,
+    const std::vector<std::filesystem::path>& drive_roots
+) {
+    for (const auto& drive_root : drive_roots) {
+        AddTangentNameCandidates(candidates, drive_root / "Tangent");
+    }
+}
+
+
+void AddDriveRootTangentCandidates(
+    std::vector<std::filesystem::path>& candidates,
+    const std::vector<std::filesystem::path>& drive_roots
+) {
+    for (const auto& drive_root : drive_roots) {
+        AddTangentNameCandidates(candidates, drive_root);
+    }
+}
+
+
+void AddWorkspaceTangentCandidates(
+    std::vector<std::filesystem::path>& candidates,
+    const std::filesystem::path& workspace_root
+) {
+    for (const auto& ancestor : AncestorDirectories(workspace_root)) {
+        AddTangentNameCandidates(candidates, ancestor);
+    }
+}
+
+
+void AddProgramFilesTangentCandidates(std::vector<std::filesystem::path>& candidates) {
+    AddTangentCommonBaseCandidates(candidates, EnvPath("ProgramFiles"));
+    AddTangentCommonBaseCandidates(candidates, EnvPath("ProgramFiles(x86)"));
+}
+
+
+std::vector<std::filesystem::path> CommonTangentRootCandidates(
+    const std::filesystem::path& workspace_root
+) {
+    std::vector<std::filesystem::path> candidates;
+
+    std::vector<std::filesystem::path> drive_roots;
+    const std::filesystem::path system_drive_root = SystemDriveRoot();
+    if (!system_drive_root.empty()) {
+        drive_roots.push_back(system_drive_root);
+    }
+    for (const auto& drive_root : FixedDriveRoots()) {
+        if (std::find(drive_roots.begin(), drive_roots.end(), drive_root) == drive_roots.end()) {
+            drive_roots.push_back(drive_root);
+        }
+    }
+
+    AddDriveTangentRootCandidates(candidates, drive_roots);
+    AddWorkspaceTangentCandidates(candidates, workspace_root);
+    AddDriveRootTangentCandidates(candidates, drive_roots);
+    AddProgramFilesTangentCandidates(candidates);
+    return candidates;
+}
+
+
+bool IsValidTangentRootCandidate(const std::filesystem::path& candidate) {
+    return DirectoryExists(candidate) &&
+           PathExists(candidate / "TGStart.exe") &&
+           DirectoryExists(candidate / "SYS");
+}
+
+
+std::optional<std::filesystem::path> FindFirstValidTangentRoot(
+    const std::vector<std::filesystem::path>& candidates
+) {
+    for (const auto& candidate : candidates) {
+        if (IsValidTangentRootCandidate(candidate)) {
+            return AbsoluteLexicallyNormal(candidate);
+        }
+    }
+    return std::nullopt;
+}
+
+
 std::filesystem::path ResolveConfiguredOrDetectedTangentRoot(
     const std::filesystem::path& workspace_root,
     const std::filesystem::path& config_path
@@ -197,9 +364,7 @@ std::filesystem::path ResolveConfiguredOrDetectedTangentRoot(
         return *configured;
     }
 
-    const auto detected = FindFirstExistingDirectory({
-        workspace_root.parent_path() / "TArchT20V9",
-    });
+    const auto detected = FindFirstValidTangentRoot(CommonTangentRootCandidates(workspace_root));
     return detected.value_or(workspace_root.parent_path() / "TArchT20V9");
 }
 
@@ -223,11 +388,11 @@ std::filesystem::path ResolveConfiguredOrDetectedAutocadRoot(
     const std::filesystem::path autodesk_root = program_files.empty()
                                                     ? std::filesystem::path()
                                                     : program_files / "Autodesk";
-    std::vector<std::filesystem::path> candidates;
+    std::vector<std::filesystem::path> autocad_candidates;
     for (int year = 2026; year >= 2020; --year) {
-        candidates.push_back(autodesk_root / BuildAutocadVersionDirectoryName(year));
+        autocad_candidates.push_back(autodesk_root / BuildAutocadVersionDirectoryName(year));
     }
-    const auto detected = FindFirstExistingDirectory(candidates);
+    const auto detected = FindFirstExistingDirectory(autocad_candidates);
     return detected.value_or(std::filesystem::path());
 }
 

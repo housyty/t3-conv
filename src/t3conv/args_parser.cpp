@@ -2,6 +2,8 @@
 
 #include "../common/utils.h"
 
+#include <Windows.h>
+
 #include <filesystem>
 #include <string>
 
@@ -124,6 +126,13 @@ bool RequireAbsolutePath(
     return true;
 }
 
+
+void SetInternalEnvironmentPath(const wchar_t* name, const std::filesystem::path& path) {
+    if (!path.empty()) {
+        SetEnvironmentVariableW(name, path.wstring().c_str());
+    }
+}
+
 }  // namespace
 
 
@@ -131,6 +140,11 @@ ParseResult ParseArgs(int argc, char** argv) {
     ParseResult result;
     std::filesystem::path explicit_target_path;
     std::filesystem::path explicit_log_path;
+    std::filesystem::path internal_tangent_root;
+    std::filesystem::path internal_autocad_root;
+    std::filesystem::path internal_font_dir;
+    std::filesystem::path internal_autocad_fonts_dir;
+    std::string internal_font_alt;
 
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index] == nullptr ? std::string() : std::string(argv[index]);
@@ -154,20 +168,73 @@ ParseResult ParseArgs(int argc, char** argv) {
             result.options.dry_run = true;
             continue;
         }
-        if (arg == "--host-start") {
-            result.options.host_control_mode = HostControlMode::kStart;
-            continue;
-        }
-        if (arg == "--host-status") {
-            result.options.host_control_mode = HostControlMode::kStatus;
-            continue;
-        }
-        if (arg == "--host-stop") {
-            result.options.host_control_mode = HostControlMode::kStop;
-            continue;
-        }
         if (arg == "--no-overwrite") {
             result.options.overwrite = false;
+            continue;
+        }
+
+        if (arg == "--internal-stdout") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            result.internal_stdout_path = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-stdout", value)) {
+            result.internal_stdout_path = value;
+            continue;
+        } else if (arg == "--internal-stderr") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            result.internal_stderr_path = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-stderr", value)) {
+            result.internal_stderr_path = value;
+            continue;
+        } else if (arg == "--internal-tangent-root") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_tangent_root = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-tangent-root", value)) {
+            internal_tangent_root = value;
+            continue;
+        } else if (arg == "--internal-autocad-root") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_autocad_root = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-autocad-root", value)) {
+            internal_autocad_root = value;
+            continue;
+        } else if (arg == "--internal-font-dir") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_font_dir = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-font-dir", value)) {
+            internal_font_dir = value;
+            continue;
+        } else if (arg == "--internal-autocad-fonts-dir") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_autocad_fonts_dir = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-autocad-fonts-dir", value)) {
+            internal_autocad_fonts_dir = value;
+            continue;
+        } else if (arg == "--internal-font-alt") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_font_alt = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-font-alt", value)) {
+            internal_font_alt = value;
             continue;
         }
 
@@ -294,14 +361,38 @@ ParseResult ParseArgs(int argc, char** argv) {
         return result;
     }
 
-    if (result.options.host_control_mode == HostControlMode::kNone &&
-        result.options.paths.source_path.empty()) {
+    if (result.options.paths.source_path.empty()) {
         result.error_message = "missing source path";
         return result;
     }
 
+    SetInternalEnvironmentPath(L"T3CONV_TANGENT_ROOT", internal_tangent_root);
+    SetInternalEnvironmentPath(L"T3CONV_AUTOCAD_ROOT", internal_autocad_root);
+
     if (!ConfigLoader::Load(result.config, result.error_message)) {
         return result;
+    }
+
+    if (!internal_tangent_root.empty()) {
+        result.config.tangent_root = internal_tangent_root.lexically_normal();
+        result.config.resolved.tangent_root = result.config.tangent_root;
+        result.config.resolved.tgstart_exe = result.config.resolved.tangent_root / "TGStart.exe";
+        result.config.resolved.tangent_mnl = result.config.resolved.tangent_root / "SYS" / "tangent.mnl";
+    }
+    if (!internal_autocad_root.empty()) {
+        result.config.autocad_root = internal_autocad_root.lexically_normal();
+        result.config.resolved.autocad_root = result.config.autocad_root;
+    }
+    if (!internal_font_dir.empty()) {
+        result.config.font_dir = internal_font_dir.lexically_normal();
+        result.config.resolved.font_dir = result.config.font_dir;
+    }
+    if (!internal_autocad_fonts_dir.empty()) {
+        result.config.autocad_fonts_dir = internal_autocad_fonts_dir.lexically_normal();
+        result.config.resolved.autocad_fonts_dir = result.config.autocad_fonts_dir;
+    }
+    if (!internal_font_alt.empty()) {
+        result.config.font_alt = internal_font_alt;
     }
 
     if (!RequireAbsolutePath(result.options.paths.source_path, "source", result.error_message)) {
@@ -376,10 +467,7 @@ std::string BuildUsage() {
         "  --dry-run                  print launch plan without executing\n"
         "  --json                     print structured JSON-like output\n"
         "  --tbatsave-bindmode <n>    reserved reverse-engineering diagnostic option\n"
-        "  --tbatsave-bindref <n>     reserved reverse-engineering diagnostic option\n"
-        "  --host-status              inspect whether the background TBatSave host is ready\n"
-        "  --host-stop                request the background TBatSave host loop to stop\n"
-        "  --host-start               optional: pre-warm or reuse a background TGStart/acad host loop\n";
+        "  --tbatsave-bindref <n>     reserved reverse-engineering diagnostic option\n";
 }
 
 }  // namespace t3conv

@@ -64,6 +64,7 @@ t3conv.exe
 解析优先级：
 
 - `paths.tangent_root`：INI 配置，其次 `T3CONV_TANGENT_ROOT`，最后自动检测。
+- Tianzheng 自动检测会优先检查各固定盘 `X:\Tangent\...` 下的常见目录，再检查 workspace 相邻目录或盘符根目录，最后检查 Program Files；候选目录必须同时包含 `TGStart.exe` 和 `SYS`。
 - `paths.autocad_root`：INI 配置，其次 `T3CONV_AUTOCAD_ROOT`，最后从 AutoCAD 2020-2026 中自动检测。
 - `fonts.fontalt`：INI 配置，其次 `T3CONV_FONTALT`，最后使用 `HZTXT.SHX`。
 - 项目字体固定读取 [`fonts`](./fonts) 目录。
@@ -116,11 +117,37 @@ C:\path\source_t3.dwg
 
 追加 `-d` / `--debug` 后，会输出执行计划，并在日志中展开子进程 stdout/stderr 和内部诊断。
 
-批量转换会在文件之间复用同一个 Tianzheng CAD 宿主。只有超时、启动失败、崩溃或明确的宿主侧失败时才会重启宿主；普通单张图纸转换失败只记录日志，然后继续下一张。
+批量转换会在文件之间复用同一个 Tianzheng CAD 宿主。子进程超时、启动失败、崩溃，或 host/direct worker 动作表明当前宿主不应继续复用时，会重启宿主。普通单张图纸转换失败只记录日志，然后继续下一张；每批次重启次数有上限。
 
 单文件转换会在 workspace 下临时创建 `_t3conv_work` 作为 staging 目录，避免 direct worker 直接覆盖目标文件；每次转换结束后会自动删除该目录。
 
-宿主控制是可选能力，正常使用时不需要手动执行。普通单文件和目录转换会按需自动复用或启动 Tianzheng CAD 宿主；只有排障、预热或手动停止时才需要使用相关 host 参数。
+普通单文件和目录转换会自动检测、复用、启动并清理 Tianzheng CAD 宿主；不再暴露手动启动 / 停止宿主的命令参数。
+
+## 恢复 AutoCAD 命令行和常用配置
+
+如果转换或手动调试后发现 AutoCAD 命令行不见了、对话框不弹出，或代理对象、外部参照、字体替代等行为被改动，可以先按键盘 `Ctrl + 9` 恢复命令行；如果弹出提示，选择显示命令行。
+
+命令行恢复后，把下面这段复制到 AutoCAD 命令行并回车，可恢复常用交互配置：
+
+```lisp
+(progn
+  (command "_.COMMANDLINE")
+  (setvar "FILEDIA" 1)
+  (setvar "CMDDIA" 1)
+  (setvar "CMDECHO" 1)
+  (setvar "EXPERT" 0)
+  (setvar "PROXYNOTICE" 1)
+  (setvar "PROXYSHOW" 1)
+  (setvar "PROXYWEBSEARCH" 0)
+  (setvar "XREFNOTIFY" 2)
+  (setvar "XLOADCTL" 2)
+  (setvar "XREFCTL" 0)
+  (setvar "ISAVEBAK" 1)
+  (setvar "FONTMAP" "acad.fmp")
+  (setvar "FONTALT" "simplex.shx")
+  (princ)
+)
+```
 
 ## 命令参数
 
@@ -138,9 +165,6 @@ C:\path\source_t3.dwg
 | `--json` | 输出 JSON 风格的执行计划。 |
 | `--tbatsave-bindmode <n>` | 逆向 / 诊断保留参数。当前 direct worker 生产链路不把它作为稳定转换参数。 |
 | `--tbatsave-bindref <n>` | 逆向 / 诊断保留参数。当前 direct worker 生产链路不把它作为稳定转换参数。 |
-| `--host-status` | 检查后台宿主是否 ready。 |
-| `--host-stop` | 请求后台宿主循环停止。 |
-| `--host-start` | 可选预热命令，用于启动或复用后台 Tianzheng CAD 宿主循环。 |
 
 ## 构建
 
@@ -161,10 +185,10 @@ cmake --build ..\_build\t3-conv-release --config Release
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-脚本默认构建 Release 版本，并生成：
+脚本默认构建 Release 版本，并覆盖生成：
 
 ```text
-<项目父目录>\dist\t3-conv.zip
+<项目根目录>\release\t3-conv.zip
 ```
 
 ZIP 只包含运行必需文件：
@@ -175,7 +199,7 @@ ZIP 只包含运行必需文件：
 - `fonts\`
 - `docs\README-packaged.md`
 
-ZIP 不包含 `src`、`tests`、`var`、构建中间文件、Tianzheng 文件或 AutoCAD 文件。
+ZIP 不包含源码、测试、本机运行状态、Tianzheng 文件或 AutoCAD 文件。
 
 ## 目录结构
 

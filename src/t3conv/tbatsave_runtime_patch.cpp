@@ -40,6 +40,9 @@ constexpr std::uint64_t kTchTbatsavePreprocessGroupsRva = 0x01B310;
 constexpr std::uint64_t kTchTbatsavePreprocessBlocksRva = 0x01E850;
 constexpr std::uint64_t kTchSaveAsTArch3Rva = 0x027310;
 constexpr std::uint64_t kTchTbatsaveSelectorBaseRva = 0x9E6C7C;
+constexpr DWORD kDirectWorkerProcessAccess =
+    PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
+    PROCESS_QUERY_INFORMATION;
 constexpr std::array<std::uint8_t, kHookPatchLength> kExpectedPostInitSignature = {
     0x48, 0x89, 0x54, 0x24, 0x10,
     0x53,
@@ -134,6 +137,11 @@ struct TbatsaveRuntimePatchSession {
     bool has_worker_cached = false;
 };
 
+struct TianzhengAcadProcess {
+    DWORD process_id = 0;
+    uintptr_t tch_kernal_base = 0;
+};
+
 TbatsaveRuntimePatchSession g_tbatsave_patch_session{};
 
 std::optional<ULONGLONG> QueryProcessCreationTime(const DWORD process_id) {
@@ -218,6 +226,125 @@ std::optional<uintptr_t> FindModuleBaseAddress(DWORD process_id, const wchar_t* 
 
     CloseHandle(snapshot);
     return std::nullopt;
+}
+
+int CountAcadProcesses() {
+    int count = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return count;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return count;
+    }
+
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") == 0) {
+            ++count;
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return count;
+}
+
+int CountAcadProcessesDenyingDirectWorkerAccess() {
+    int count = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return count;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return count;
+    }
+
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") != 0) {
+            continue;
+        }
+        HANDLE process = OpenProcess(kDirectWorkerProcessAccess, FALSE, entry.th32ProcessID);
+        if (process != nullptr) {
+            CloseHandle(process);
+            continue;
+        }
+        if (GetLastError() == ERROR_ACCESS_DENIED) {
+            ++count;
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return count;
+}
+
+bool TryDiagnoseDirectWorkerAccessDenied(std::vector<std::string>& diagnostics) {
+    const int acad_count = CountAcadProcesses();
+    if (acad_count <= 0) {
+        return false;
+    }
+
+    const int access_denied_count = CountAcadProcessesDenyingDirectWorkerAccess();
+    const bool should_fail_fast = access_denied_count > 0 && access_denied_count == acad_count;
+    if (!should_fail_fast) {
+        return false;
+    }
+
+    diagnostics.push_back("tbatsave_direct_worker=acad_access_denied");
+    diagnostics.push_back(
+        "tbatsave_direct_worker_access_denied_count=" +
+        std::to_string(access_denied_count)
+    );
+    diagnostics.push_back("tbatsave_direct_worker_hint=run_t3conv_elevated");
+    diagnostics.push_back(
+        "tbatsave_direct_worker_acad_process_count=" + std::to_string(acad_count)
+    );
+    return true;
+}
+
+std::optional<TianzhengAcadProcess> FindNewestTianzhengAcadProcess() {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return std::nullopt;
+    }
+
+    std::optional<TianzhengAcadProcess> best;
+    std::optional<ULONGLONG> best_creation_time;
+    do {
+        if (_wcsicmp(entry.szExeFile, L"acad.exe") != 0) {
+            continue;
+        }
+
+        const auto tch_kernal_base =
+            FindModuleBaseAddress(entry.th32ProcessID, L"tch_kernal.arx");
+        if (!tch_kernal_base.has_value()) {
+            continue;
+        }
+
+        const auto creation_time = QueryProcessCreationTime(entry.th32ProcessID);
+        if (!best.has_value() ||
+            (creation_time.has_value() &&
+             (!best_creation_time.has_value() || *creation_time > *best_creation_time))) {
+            best = TianzhengAcadProcess{entry.th32ProcessID, *tch_kernal_base};
+            best_creation_time = creation_time;
+        }
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return best;
 }
 
 DWORD TimeoutSecondsToMilliseconds(const int timeout_seconds) {
@@ -1550,6 +1677,42 @@ std::optional<uintptr_t> WaitForTchKernalBase(
     return std::nullopt;
 }
 
+std::optional<TianzhengAcadProcess> WaitForNewestTianzhengAcadProcess(
+    std::vector<std::string>& diagnostics
+) {
+    const ULONGLONG started = GetTickCount64();
+    bool saw_acad = false;
+    while (GetTickCount64() - started < kTbatsaveDirectWorkerModuleWaitMilliseconds) {
+        if (const auto process = FindNewestTianzhengAcadProcess(); process.has_value()) {
+            return process;
+        }
+        saw_acad = saw_acad || CountAcadProcesses() > 0;
+        if (TryDiagnoseDirectWorkerAccessDenied(diagnostics)) {
+            return std::nullopt;
+        }
+        Sleep(500);
+    }
+    if (saw_acad) {
+        const int access_denied_count = CountAcadProcessesDenyingDirectWorkerAccess();
+        if (access_denied_count > 0) {
+            diagnostics.push_back("tbatsave_direct_worker=acad_access_denied");
+            diagnostics.push_back(
+                "tbatsave_direct_worker_access_denied_count=" +
+                std::to_string(access_denied_count)
+            );
+            diagnostics.push_back("tbatsave_direct_worker_hint=run_t3conv_elevated");
+        } else {
+            diagnostics.push_back("tbatsave_direct_worker=tch_kernal_not_loaded");
+        }
+    } else {
+        diagnostics.push_back("tbatsave_direct_worker=acad_not_found");
+    }
+    diagnostics.push_back(
+        "tbatsave_direct_worker_acad_process_count=" + std::to_string(CountAcadProcesses())
+    );
+    return std::nullopt;
+}
+
 }  // namespace
 
 bool TryInstallTbatsaveRuntimePatch(
@@ -2036,16 +2199,13 @@ bool TryRunTbatsaveDirectWorker(
         return false;
     }
 
-    const auto acad_pid = FindNewestProcessIdByName(L"acad.exe");
-    if (!acad_pid.has_value()) {
-        diagnostics.push_back("tbatsave_direct_worker=acad_not_found");
+    const auto acad_process = WaitForNewestTianzhengAcadProcess(diagnostics);
+    if (!acad_process.has_value()) {
         return false;
     }
-
-    const auto tch_kernal_base = WaitForTchKernalBase(*acad_pid, diagnostics);
-    if (!tch_kernal_base.has_value()) {
-        return false;
-    }
+    diagnostics.push_back(
+        "tbatsave_direct_worker_selected_pid=" + std::to_string(acad_process->process_id)
+    );
 
     std::error_code error_code;
     std::filesystem::create_directories(plan.batch_output_dir, error_code);
@@ -2060,10 +2220,9 @@ bool TryRunTbatsaveDirectWorker(
     }
 
     HANDLE process = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
-            PROCESS_QUERY_INFORMATION,
+        kDirectWorkerProcessAccess,
         FALSE,
-        *acad_pid
+        acad_process->process_id
     );
     if (process == nullptr) {
         diagnostics.push_back("tbatsave_direct_worker=open_process_failed");
@@ -2100,7 +2259,7 @@ bool TryRunTbatsaveDirectWorker(
     const uintptr_t output_address = remote_base + kOutputOffset;
     const uintptr_t db_address = remote_base + kDbOffset;
 
-    if (!TryWriteNonUiFlags(process, *tch_kernal_base)) {
+    if (!TryWriteNonUiFlags(process, acad_process->tch_kernal_base)) {
         diagnostics.push_back("tbatsave_direct_worker=non_ui_flags_failed");
         VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
         CloseHandle(process);
@@ -2113,7 +2272,7 @@ bool TryRunTbatsaveDirectWorker(
     control.output_remote = output_address;
 
     const std::vector<std::uint8_t> stub = BuildTbatsaveDirectWorkerStub(
-        *tch_kernal_base,
+        acad_process->tch_kernal_base,
         control_address,
         db_address,
         source_address,
@@ -2215,7 +2374,7 @@ bool TryRunTbatsaveDirectWorker(
     diagnostics.push_back(
         "tbatsave_direct_worker_thread_exit_code=" + std::to_string(thread_exit_code)
     );
-    append_hex("tbatsave_direct_worker_tch_kernal=", *tch_kernal_base);
+    append_hex("tbatsave_direct_worker_tch_kernal=", acad_process->tch_kernal_base);
     append_hex("tbatsave_direct_worker_stub=", code_address);
     append_hex("tbatsave_direct_worker_db=", db_address);
 

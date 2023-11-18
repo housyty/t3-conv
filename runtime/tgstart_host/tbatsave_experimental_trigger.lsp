@@ -38,6 +38,33 @@
   (_tbx-write-result *tbx-host-ready-path* (list "READY"))
   (princ))
 
+(defun _tbx-tch-kernal-loaded-p (/ loaded item lower)
+  (setq loaded (arx))
+  (while (and loaded (not lower))
+    (setq item (car loaded))
+    (if item
+      (progn
+        (setq lower (strcase item T))
+        (if (not (wcmatch lower "*tch_kernal.arx*"))
+          (setq lower nil))))
+    (setq loaded (cdr loaded)))
+  (and lower T))
+
+(defun _tbx-wait-for-tch-kernal (/ i)
+  (setq i 0)
+  (while (and (< i 120) (not (_tbx-tch-kernal-loaded-p)))
+    (setq i (1+ i))
+    (if (= 0 (rem i 10))
+      (_tbx-log "host ready deferred until tch_kernal.arx is loaded"))
+    (vl-cmdf "._delay" 500))
+  (if (_tbx-tch-kernal-loaded-p)
+    (progn
+      (_tbx-log "tch_kernal.arx loaded")
+      T)
+    (progn
+      (_tbx-log "tch_kernal.arx wait timed out")
+      nil)))
+
 (defun _tbx-safe-setvar (name value / err)
   (_tbx-log (strcat "setvar " name " begin"))
   (setq err (vl-catch-all-apply 'setvar (list name value)))
@@ -79,8 +106,12 @@
       (_tbx-clear-file *tbx-host-stop-path*)))
   (_tbx-clear-file *tbx-host-bootstrap-path*)
   (_tbx-prepare-env)
-  (_tbx-log "host ready")
-  (_tbx-write-host-ready)
+  (if (_tbx-wait-for-tch-kernal)
+    (progn
+      (_tbx-log "host ready")
+      (_tbx-write-host-ready))
+    (_tbx-log "host ready not written because tch_kernal.arx is missing"))
+  (_tbx-log "host ready; returning control to AutoCAD")
   (princ))
 
 (defun c:TBXHOSTSTOP ()
