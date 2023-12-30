@@ -1671,7 +1671,7 @@ std::optional<uintptr_t> WaitForTchKernalBase(
             base.has_value()) {
             return base;
         }
-        Sleep(500);
+        Sleep(100);
     }
     diagnostics.push_back("tbatsave_direct_worker=tch_kernal_not_loaded");
     return std::nullopt;
@@ -1690,7 +1690,7 @@ std::optional<TianzhengAcadProcess> WaitForNewestTianzhengAcadProcess(
         if (TryDiagnoseDirectWorkerAccessDenied(diagnostics)) {
             return std::nullopt;
         }
-        Sleep(500);
+        Sleep(100);
     }
     if (saw_acad) {
         const int access_denied_count = CountAcadProcessesDenyingDirectWorkerAccess();

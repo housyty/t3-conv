@@ -31,6 +31,7 @@ constexpr const char* kReuseCheckAcadTchKernal = "acad+tch_kernal";
 constexpr const char* kBridgeRuntimeFileName = "tangent_mnl_bridge.runtime.lsp";
 constexpr const char* kRuntimeFontMapFileName = "fontmap.fmp";
 constexpr const char* kDefaultTbatsaveFontAlt = "HZTXT.SHX";
+constexpr int kPeriodicHostRestartInterval = 50;
 constexpr DWORD kDirectWorkerProcessAccess =
     PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
     PROCESS_QUERY_INFORMATION;
@@ -618,7 +619,7 @@ bool WaitForTbatsaveHostReady(
             }
             saw_ready_without_process = true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return false;
 }
@@ -1118,6 +1119,37 @@ void KillAllAcadProcesses(std::vector<std::string>& diagnostics) {
 }
 
 
+int ReadConversionCount(const std::filesystem::path& count_path) {
+    const auto line = ReadFirstLine(count_path);
+    if (!line.has_value()) {
+        return 0;
+    }
+    try {
+        return std::stoi(*line);
+    } catch (...) {
+        return 0;
+    }
+}
+
+
+bool WriteConversionCount(const std::filesystem::path& count_path, int count) {
+    return WriteTextFile(count_path, std::to_string(count));
+}
+
+
+int IncrementConversionCount(const std::filesystem::path& count_path) {
+    const int current = ReadConversionCount(count_path);
+    const int next = current + 1;
+    WriteConversionCount(count_path, next);
+    return next;
+}
+
+
+void ResetConversionCount(const std::filesystem::path& count_path) {
+    WriteConversionCount(count_path, 0);
+}
+
+
 bool ShouldPreserveAcadAfterPermissionDenied(const std::vector<std::string>& diagnostics) {
     return std::find(
                diagnostics.begin(),
@@ -1494,6 +1526,7 @@ ProcessLaunchPlan ProcessManager::BuildLaunchPlan(const CliOptions& options, con
     plan.host_bridge_template_path = resolved.bridge_template_path;
     plan.host_mnl_path = resolved.tangent_mnl;
     plan.trigger_log_path = resolved.trigger_log_path;
+    plan.conversion_count_path = resolved.conversion_count_path;
     plan.working_dir = options.paths.source_path.empty()
                            ? resolved.workspace_root
                            : BuildTbatsaveWorkDir(options);
@@ -1503,7 +1536,7 @@ ProcessLaunchPlan ProcessManager::BuildLaunchPlan(const CliOptions& options, con
     plan.script_path = plan.working_dir / (script_stem + ".scr");
     plan.worker_status_path = resolved.worker_status_path;
     if (!options.paths.source_path.empty()) {
-        plan.stage_source_path = plan.working_dir / options.paths.source_path.filename();
+        plan.stage_source_path = options.paths.source_path;
     }
     plan.batch_output_dir = plan.working_dir / "batch_output";
     plan.target_path = options.paths.target_path;
@@ -1590,14 +1623,6 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
     if (options.overwrite) {
         RemoveFileIfExists(plan.target_path);
     }
-    if (!CopyFileOverwrite(options.paths.source_path, plan.stage_source_path)) {
-        return FailWith(
-            ErrorCode::kSaveFailed,
-            "failed to stage source file for TGStart/TBatSave",
-            plan,
-            std::move(pre_launch_diagnostics)
-        );
-    }
     if (!EnsureTbatsaveStartupState(plan, pre_launch_diagnostics)) {
         KillAllAcadProcesses(pre_launch_diagnostics);
         return FailWith(
@@ -1618,6 +1643,18 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
                 start_time,
                 std::move(post_launch_diagnostics)
             );
+            if (result.success) {
+                const int count = IncrementConversionCount(plan.conversion_count_path);
+                result.diagnostics.push_back("conversion_count=" + std::to_string(count));
+                if (count >= kPeriodicHostRestartInterval) {
+                    KillTianzhengAcadHosts();
+                    ResetConversionCount(plan.conversion_count_path);
+                    RemoveFileIfExists(plan.host_ready_path);
+                    RemoveFileIfExists(plan.host_stop_path);
+                    RemoveFileIfExists(plan.worker_status_path);
+                    result.diagnostics.push_back("host_periodic_restart=killed");
+                }
+            }
             CleanupWorkingDirectory(plan);
             return result;
         }
@@ -1676,6 +1713,18 @@ ConversionResult ProcessManager::Execute(const CliOptions& options, const Proces
             start_time,
             std::move(post_launch_diagnostics)
         );
+        if (direct_result.success) {
+            const int count = IncrementConversionCount(plan.conversion_count_path);
+            direct_result.diagnostics.push_back("conversion_count=" + std::to_string(count));
+            if (count >= kPeriodicHostRestartInterval) {
+                KillTianzhengAcadHosts();
+                ResetConversionCount(plan.conversion_count_path);
+                RemoveFileIfExists(plan.host_ready_path);
+                RemoveFileIfExists(plan.host_stop_path);
+                RemoveFileIfExists(plan.worker_status_path);
+                direct_result.diagnostics.push_back("host_periodic_restart=killed");
+            }
+        }
         CloseHandle(process_info.hThread);
         CloseHandle(process_info.hProcess);
         CleanupWorkingDirectory(plan);

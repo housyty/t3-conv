@@ -245,7 +245,8 @@ void StopTianzhengAcad() {
 std::vector<std::string> BuildChildArgs(
     const CliOptions& options,
     const std::filesystem::path& source,
-    const std::filesystem::path& target
+    const std::filesystem::path& target,
+    const AppConfig& config
 ) {
     std::vector<std::string> child_args = {
         "--timeout-seconds",
@@ -266,6 +267,16 @@ std::vector<std::string> BuildChildArgs(
         child_args.push_back("--tbatsave-bindref");
         child_args.push_back(std::to_string(options.tbatsave_bind_ref));
     }
+    child_args.push_back("--internal-tangent-root");
+    child_args.push_back(config.resolved.tangent_root.string());
+    child_args.push_back("--internal-autocad-root");
+    child_args.push_back(config.resolved.autocad_root.string());
+    child_args.push_back("--internal-font-dir");
+    child_args.push_back(config.resolved.font_dir.string());
+    child_args.push_back("--internal-autocad-fonts-dir");
+    child_args.push_back(config.resolved.autocad_fonts_dir.string());
+    child_args.push_back("--internal-font-alt");
+    child_args.push_back(config.font_alt);
     return child_args;
 }
 
@@ -417,7 +428,7 @@ std::string BatchRunner::RenderPlan(
         files.empty() ? std::filesystem::path("<source.dwg>") : files.front();
     const std::filesystem::path child_target =
         files.empty() ? output_dir / "<source>_t3.dwg" : BatchTargetPath(files.front(), output_dir);
-    const std::vector<std::string> child_args = BuildChildArgs(options, child_source, child_target);
+    const std::vector<std::string> child_args = BuildChildArgs(options, child_source, child_target, config);
 
     std::ostringstream stream;
     stream << "mode=t3conv_batch_parent\n";
@@ -435,7 +446,7 @@ std::string BatchRunner::RenderPlan(
 
 int BatchRunner::Execute(
     const CliOptions& options,
-    const AppConfig&,
+    const AppConfig& config,
     const char* executable_path
 ) {
     const std::filesystem::path output_dir = OutputDirectory(options);
@@ -452,7 +463,7 @@ int BatchRunner::Execute(
         BatchRow last_row;
 
         for (int attempt = 1; attempt <= options.retries + 1; ++attempt) {
-            const std::vector<std::string> child_args = BuildChildArgs(options, source, target);
+            const std::vector<std::string> child_args = BuildChildArgs(options, source, target, config);
             const std::string copyable = JoinLogCommandLine(executable_path, child_args);
             const auto wall_start = std::chrono::system_clock::now();
             const auto start = std::chrono::steady_clock::now();

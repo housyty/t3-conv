@@ -446,6 +446,7 @@ ResolvedPaths BuildResolvedPaths(
     paths.bootstrap_state_path = paths.var_root / "bootstrap.json";
     paths.worker_status_path = paths.host_dir / "worker_status.txt";
     paths.trigger_log_path = paths.logs_dir / "trigger.log";
+    paths.conversion_count_path = paths.host_dir / "conversion_count.txt";
     return paths;
 }
 

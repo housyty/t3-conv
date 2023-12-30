@@ -60,6 +60,7 @@ struct ResolvedPaths {
     std::filesystem::path bootstrap_state_path;
     std::filesystem::path worker_status_path;
     std::filesystem::path trigger_log_path;
+    std::filesystem::path conversion_count_path;
 };
 
 struct AppConfig {
@@ -114,6 +115,7 @@ struct ProcessLaunchPlan {
     std::filesystem::path tarch_root;
     std::filesystem::path autocad_root;
     std::filesystem::path working_dir;
+    std::filesystem::path conversion_count_path;
     std::vector<std::string> arguments;
     std::string script_contents;
     std::string font_alt;

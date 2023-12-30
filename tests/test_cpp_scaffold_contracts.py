@@ -190,7 +190,7 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         expected_target = self.sample_source.with_name(f"{self.sample_source.stem}_t3{self.sample_source.suffix}")
         self.assertIn(f"target={norm(expected_target)}", completed.stdout)
         self.assertIn(f"log={norm(self.workspace_root / 't3conv.log')}", completed.stdout)
-        self.assertIn(f"stage_source={norm(self.workspace_root / '_t3conv_work' / self.sample_source.name)}", completed.stdout)
+        self.assertIn(f"stage_source={norm(self.sample_source)}", completed.stdout)
         self.assertIn(f"batch_output={norm(self.workspace_root / '_t3conv_work/batch_output')}", completed.stdout)
 
     def test_directory_source_dry_run_is_batch_parent_without_batch_flag(self):
@@ -710,6 +710,16 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         )
         self.assertNotIn("--max-host-restarts", source)
 
+    def test_periodic_host_restart_runs_after_fifty_successful_conversions(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("kPeriodicHostRestartInterval = 50;", source)
+        self.assertNotIn("kPeriodicHostRestartInterval = 5;", source)
+        self.assertIn("conversion_count=", source)
+        self.assertIn("host_periodic_restart=killed", source)
+        self.assertNotIn("host_restarting", source)
+        self.assertNotIn("CreateThread", source)
+
     def test_real_conversions_are_serialized_by_tangent_root_mutex(self):
         main = (self.workspace_root / "src/t3conv/main.cpp").read_text(encoding="utf-8")
         args_parser = (self.workspace_root / "src/t3conv/args_parser.cpp").read_text(encoding="utf-8")
@@ -877,7 +887,7 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn("return std::nullopt;", wait_body)
         self.assertLess(
             wait_body.index("TryDiagnoseDirectWorkerAccessDenied(diagnostics)"),
-            wait_body.index("Sleep(500);")
+            wait_body.index("Sleep(100);")
         )
         self.assertLess(
             wait_body.index("TryDiagnoseDirectWorkerAccessDenied(diagnostics)"),

@@ -52,11 +52,11 @@
 
 (defun _tbx-wait-for-tch-kernal (/ i)
   (setq i 0)
-  (while (and (< i 120) (not (_tbx-tch-kernal-loaded-p)))
+  (while (and (< i 200) (not (_tbx-tch-kernal-loaded-p)))
     (setq i (1+ i))
     (if (= 0 (rem i 10))
       (_tbx-log "host ready deferred until tch_kernal.arx is loaded"))
-    (vl-cmdf "._delay" 500))
+    (vl-cmdf "._delay" 200))
   (if (_tbx-tch-kernal-loaded-p)
     (progn
       (_tbx-log "tch_kernal.arx loaded")
