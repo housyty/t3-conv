@@ -45,17 +45,23 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
             )
         )
         (self.expected_tangent_root / "SYS").mkdir(parents=True, exist_ok=True)
+        (self.expected_tangent_root / "sys23x64").mkdir(parents=True, exist_ok=True)
         (self.expected_tangent_root / "TGStart.exe").touch()
+        (self.expected_tangent_root / "sys23x64" / "tch_kernal.arx").touch()
         (self.expected_autocad_root / "Fonts").mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
         self._temp_dir.cleanup()
 
     def run_exe(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return self.run_exe_with_env({}, *args)
+
+    def run_exe_with_env(self, env_overrides: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
         command = [str(self.exe), *args]
         env = os.environ.copy()
         env.setdefault("T3CONV_TANGENT_ROOT", str(self.expected_tangent_root))
         env.setdefault("T3CONV_AUTOCAD_ROOT", str(self.expected_autocad_root))
+        env.update(env_overrides)
         try:
             return subprocess.run(
                 command,
@@ -124,6 +130,19 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         )
         self.assertNotIn("FindFirstExistingDirectory(candidates)", config_loader)
 
+    def test_missing_autocad_reports_install_error_before_version_mapping_error(self):
+        missing_autocad_root = self.test_temp_root / "Missing AutoCAD 2020"
+        completed = self.run_exe_with_env(
+            {"T3CONV_AUTOCAD_ROOT": str(missing_autocad_root)},
+            "--dry-run",
+            "-s",
+            str(self.sample_source),
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("AutoCAD is not installed or not found", completed.stderr)
+        self.assertNotIn("AutoCAD version is not mapped", completed.stderr)
+
     def test_help_output_only_mentions_current_flags(self):
         completed = self.run_exe("--help")
 
@@ -146,6 +165,13 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn("accoreconsole", completed.stdout.lower())
         self.assertNotIn("--acad <path>", completed.stdout)
         self.assertNotIn("--arx <path>", completed.stdout)
+
+    def test_release_build_uses_static_msvc_runtime(self):
+        cmake = (self.workspace_root / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        self.assertIn("CMAKE_MSVC_RUNTIME_LIBRARY", cmake)
+        self.assertIn("MultiThreaded", cmake)
+        self.assertNotIn("MultiThreadedDLL", cmake)
 
     def test_dry_run_renders_single_tgstart_tbatsave_plan(self):
         completed = self.run_exe("--dry-run", "--source", str(self.sample_source))
@@ -411,6 +437,16 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn("host_hook=mnl_created", source)
         self.assertNotIn('diagnostics.push_back("host_hook=mnl_missing");\n        return false;', source)
 
+    def test_tangent_mnl_trusts_runtime_directory_before_loading_bridge(self):
+        source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+        startup_body = source[source.index("bool EnsureTbatsaveHostStartupHook"):]
+        startup_body = startup_body[:startup_body.index("bool EnsureTbatsaveStartupState")]
+
+        self.assertIn("BuildTrustedPathsBootstrapLine", source)
+        self.assertIn("TRUSTEDPATHS", source)
+        self.assertIn("SECURELOAD", source)
+        self.assertLess(startup_body.index("trusted_paths_line"), startup_body.index("bridge_load_line"))
+
     def test_conversion_startup_self_check_repairs_host_markers(self):
         source = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
         execute_body = source[source.index("ConversionResult ProcessManager::Execute"):]
@@ -549,6 +585,54 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
             "0x9E6C7C",
         ]:
             self.assertIn(token, source)
+
+    def test_direct_worker_uses_versioned_tch_kernal_runtime_layouts(self):
+        source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
+        worker_body = source[source.index("bool TryRunTbatsaveDirectWorker"):]
+        worker_body = worker_body[:worker_body.index("bool EnsureTbatsaveRuntimePatchSession")]
+
+        self.assertIn("struct TchKernelRuntimeLayout", source)
+        self.assertIn("kTchKernelSys23x64Layout", source)
+        self.assertIn("kTchKernelSys24x64Layout", source)
+        self.assertIn("ResolveTchKernelRuntimeLayout", source)
+        self.assertIn("ValidateTchKernelRuntimeLayout", source)
+        self.assertIn("tbatsave_direct_worker=unsupported_tch_kernal_layout", source)
+        self.assertIn("tbatsave_direct_worker=layout_signature_mismatch", source)
+        self.assertIn("tbatsave_direct_worker_layout=", worker_body)
+        self.assertIn("BuildTbatsaveDirectWorkerStub(", worker_body)
+        self.assertIn("*layout", worker_body)
+
+    def test_autocad_2021_direct_worker_layout_does_not_reuse_sys23_rvas(self):
+        source = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
+
+        def extract_layout(name: str) -> str:
+            marker = f"constexpr TchKernelRuntimeLayout {name}"
+            self.assertIn(marker, source)
+            start = source.index(marker)
+            end = source.index("};", start)
+            return source[start:end]
+
+        sys23 = extract_layout("kTchKernelSys23x64Layout")
+        sys24 = extract_layout("kTchKernelSys24x64Layout")
+
+        for field in [
+            "acdb_database_ctor_rva",
+            "acdb_database_dtor_rva",
+            "acdb_database_read_dwg_file_rva",
+            "preprocess_groups_rva",
+            "preprocess_blocks_rva",
+            "save_as_tarch3_rva",
+            "selector_base_rva",
+            "non_ui_flag_rva",
+            "ui_state_flag_rva",
+        ]:
+            self.assertIn(field, sys23)
+            self.assertIn(field, sys24)
+
+        self.assertNotIn("0x027310", sys24)
+        self.assertNotIn("0x64A8D0", sys24)
+        self.assertNotIn("0x64A912", sys24)
+        self.assertNotIn("0x9E6C7C", sys24)
 
     def test_runtime_templates_use_placeholders_not_absolute_paths(self):
         bridge = (self.workspace_root / "runtime/tgstart_host/tangent_mnl_bridge.lsp").read_text(
@@ -790,6 +874,37 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertIn('"t3-conv"', source)
         self.assertNotIn('"t3-converter"', source)
 
+    def test_autocad_year_selects_matching_tianzheng_sys_directory(self):
+        config_loader = (self.workspace_root / "src/t3conv/config_loader.cpp").read_text(encoding="utf-8")
+        types = (self.workspace_root / "src/common/types.h").read_text(encoding="utf-8")
+        process_mgr = (self.workspace_root / "src/t3conv/process_mgr.cpp").read_text(encoding="utf-8")
+        docs = (self.workspace_root / "docs/t3conv-developer-guide.md").read_text(encoding="utf-8")
+        protocol = (self.workspace_root / "docs/tbatsave-direct-worker-protocol.md").read_text(encoding="utf-8")
+
+        self.assertIn("tangent_sys_dir", types)
+        self.assertIn("BuildTangentSysDirectoryNameForAutocadYear", config_loader)
+        self.assertIn("ResolveTangentSysDir", config_loader)
+        self.assertIn("DetectAutocadYearFromRoot", config_loader)
+        self.assertIn('case 2020:\n            return "sys23x64";', config_loader)
+        self.assertIn('case 2021:\n            return "sys24x64";', config_loader)
+        self.assertIn('candidate / "tch_kernal.arx"', config_loader)
+        self.assertIn("paths.tangent_sys_dir = tangent_sys_dir;", config_loader)
+        self.assertIn('paths.tangent_mnl = tangent_root / "SYS" / "tangent.mnl";', config_loader)
+        self.assertIn("plan.tangent_sys_dir = resolved.tangent_sys_dir;", process_mgr)
+        self.assertIn("plan.tangent_sys_dir / \"HZTXT.SHX\"", process_mgr)
+        self.assertIn("tangent_sys_dir=", process_mgr)
+        self.assertIn('\\"tangent_sys_dir\\"', process_mgr)
+        self.assertIn("--internal-tangent-sys-dir", (self.workspace_root / "src/t3conv/args_parser.cpp").read_text(encoding="utf-8"))
+        self.assertIn("config.resolved.tangent_sys_dir.string()", (self.workspace_root / "src/t3conv/batch_runner.cpp").read_text(encoding="utf-8"))
+        patcher = (self.workspace_root / "src/t3conv/tbatsave_runtime_patch.cpp").read_text(encoding="utf-8")
+        self.assertIn('plan.tangent_sys_dir / "tch_kernal.arx"', patcher)
+        self.assertIn("tbatsave_direct_worker_tch_kernal_path=", patcher)
+        self.assertIn("SamePathCaseInsensitive", patcher)
+        self.assertIn("AutoCAD 2020 -> `sys23x64`", docs)
+        self.assertIn("AutoCAD 2021 -> `sys24x64`", docs)
+        self.assertIn("AutoCAD 2020 -> `sys23x64`", protocol)
+        self.assertIn("AutoCAD 2021 -> `sys24x64`", protocol)
+
     def test_packaging_script_creates_portable_zip_without_generated_state(self):
         script = self.workspace_root / "tools/package.ps1"
         self.assertTrue(script.exists())
@@ -814,6 +929,55 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
         self.assertNotIn("var\\host", source)
         self.assertNotIn(".pdb", source)
         self.assertNotIn(".obj", source)
+
+    def test_restore_autocad_settings_helper_is_direct_and_standalone(self):
+        cmd = self.workspace_root / "tools/restore-autocad-settings.cmd"
+        ps1 = self.workspace_root / "tools/restore-autocad-settings.ps1"
+        self.assertTrue(cmd.exists())
+        self.assertFalse(ps1.exists())
+
+        cmd_source = cmd.read_text(encoding="utf-8")
+        package_source = (self.workspace_root / "tools/package.ps1").read_text(encoding="utf-8")
+        readme = (self.workspace_root / "README.md").read_text(encoding="utf-8")
+        readme_zh = (self.workspace_root / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        self.assertIn("powershell.exe", cmd_source)
+        self.assertIn("-ExecutionPolicy Bypass", cmd_source)
+        self.assertIn("-EncodedCommand", cmd_source)
+        self.assertNotIn("restore-autocad-settings.ps1", cmd_source)
+        self.assertIn("Usage: restore-autocad-settings.cmd", cmd_source)
+        self.assertIn('/?', cmd_source)
+        self.assertIn("--help", cmd_source)
+        self.assertIn("GetActiveObject", cmd_source)
+        self.assertIn("New-Object -ComObject", cmd_source)
+        self.assertIn("SetVariable", cmd_source)
+        self.assertIn("COMMANDLINE", cmd_source)
+        for token in [
+            "FILEDIA",
+            "CMDDIA",
+            "CMDECHO",
+            "EXPERT",
+            "PROXYNOTICE",
+            "PROXYSHOW",
+            "PROXYWEBSEARCH",
+            "XREFNOTIFY",
+            "XLOADCTL",
+            "XREFCTL",
+            "ISAVEBAK",
+            "FONTMAP",
+            "FONTALT",
+        ]:
+            self.assertIn(token, cmd_source)
+
+        for forbidden in ["tangent.mnl", "host_bootstrap", "tbatsave", "var\\runtime"]:
+            self.assertNotIn(forbidden, cmd_source)
+
+        self.assertIn("restore-autocad-settings.cmd", package_source)
+        self.assertNotIn("restore-autocad-settings.ps1", package_source)
+        self.assertIn("restore-autocad-settings.cmd", readme)
+        self.assertIn("restore-autocad-settings.cmd", readme_zh)
+        self.assertNotIn("restore-autocad-settings.ps1", readme)
+        self.assertNotIn("restore-autocad-settings.ps1", readme_zh)
 
     def test_docs_cover_modal_risks_and_current_calling_contract(self):
         source = (self.workspace_root / "docs/tbatsave-direct-worker-protocol.md").read_text(encoding="utf-8")
@@ -843,10 +1007,10 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
             "worker_status.txt",
             "timeout_seconds=120",
             "started_at=<local time, yyyy-MM-dd HH:mm:ss>",
-            "除上表列出的 4 个文件外",
+            "除上表列出的 3 个文件外",
             "CMDECHO=0",
             "ISAVEBAK=0",
-            "AutoCAD 2020-2026",
+            "AutoCAD 2021 / 2020",
             "错误码",
             "排障",
         ]:
@@ -854,8 +1018,8 @@ class CurrentTbatsaveNoUiContractsTests(unittest.TestCase):
 
         self.assertIn("positional source path", readme)
         self.assertIn("位置参数", readme_zh)
-        self.assertIn("AutoCAD 2020-2026", readme)
-        self.assertIn("AutoCAD 2020-2026", readme_zh)
+        self.assertIn("AutoCAD 2020 or 2021", readme)
+        self.assertIn("AutoCAD 2020 或 2021", readme_zh)
         self.assertIn("started_at", readme)
         self.assertIn("started_at", readme_zh)
         self.assertNotIn(".\\t3conv.exe --host-status", readme)

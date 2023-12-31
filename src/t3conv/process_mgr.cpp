@@ -540,13 +540,33 @@ std::string BuildFontSearchPath(const ProcessLaunchPlan& plan) {
 
 
 std::string BuildTbatsaveFontMapContents(const ProcessLaunchPlan& plan) {
-    const std::filesystem::path sys_dir = plan.tarch_root / "SYS";
-    const std::string hztxt = FontMapTarget(sys_dir / "HZTXT.SHX");
-    const std::string hzfs = FontMapTarget(sys_dir / "HZFS.SHX");
-    const std::string hzht = FontMapTarget(sys_dir / "HZHT.SHX");
-    const std::string hzkt = FontMapTarget(sys_dir / "HZKT.SHX");
-    const std::string hzst = FontMapTarget(sys_dir / "HZST.SHX");
-    const std::string gbcbig = FontMapTarget(sys_dir / "gbcbig0.shx");
+    const std::filesystem::path sys_dir = plan.tangent_sys_dir.empty()
+                                              ? plan.tarch_root / "SYS"
+                                              : plan.tangent_sys_dir;
+    const std::filesystem::path hztxt_path = plan.tangent_sys_dir.empty()
+                                                 ? sys_dir / "HZTXT.SHX"
+                                                 : plan.tangent_sys_dir / "HZTXT.SHX";
+    const std::filesystem::path hzfs_path = plan.tangent_sys_dir.empty()
+                                                ? sys_dir / "HZFS.SHX"
+                                                : plan.tangent_sys_dir / "HZFS.SHX";
+    const std::filesystem::path hzht_path = plan.tangent_sys_dir.empty()
+                                                ? sys_dir / "HZHT.SHX"
+                                                : plan.tangent_sys_dir / "HZHT.SHX";
+    const std::filesystem::path hzkt_path = plan.tangent_sys_dir.empty()
+                                                ? sys_dir / "HZKT.SHX"
+                                                : plan.tangent_sys_dir / "HZKT.SHX";
+    const std::filesystem::path hzst_path = plan.tangent_sys_dir.empty()
+                                                ? sys_dir / "HZST.SHX"
+                                                : plan.tangent_sys_dir / "HZST.SHX";
+    const std::filesystem::path gbcbig_path = plan.tangent_sys_dir.empty()
+                                                  ? sys_dir / "gbcbig0.shx"
+                                                  : plan.tangent_sys_dir / "gbcbig0.shx";
+    const std::string hztxt = FontMapTarget(hztxt_path);
+    const std::string hzfs = FontMapTarget(hzfs_path);
+    const std::string hzht = FontMapTarget(hzht_path);
+    const std::string hzkt = FontMapTarget(hzkt_path);
+    const std::string hzst = FontMapTarget(hzst_path);
+    const std::string gbcbig = FontMapTarget(gbcbig_path);
 
     std::ostringstream stream;
     stream << "; t3-conv runtime font map for unattended TBatSave\n";
@@ -662,6 +682,26 @@ bool IsManagedTbatsaveBridgeLoadLine(const std::string& line) {
 }
 
 
+bool IsManagedTrustedPathsBootstrapLine(const std::string& line) {
+    return line.find("t3conv-trust-runtime-for-SECURELOAD") != std::string::npos;
+}
+
+
+std::string BuildTrustedPathsBootstrapLine(const ProcessLaunchPlan& plan) {
+    const std::string runtime_dir = ToForwardSlashes(plan.runtime_dir);
+    return "(progn (vl-load-com) "
+           "(setq t3conv:trusted-paths (getvar \"TRUSTEDPATHS\")) "
+           "(if (not t3conv:trusted-paths) (setq t3conv:trusted-paths \"\")) "
+           "(if (not (vl-string-search (strcase \"" +
+           runtime_dir +
+           "\") (strcase t3conv:trusted-paths))) "
+           "(vl-catch-all-apply 'setvar "
+           "(list \"TRUSTEDPATHS\" (strcat \"" +
+           runtime_dir +
+           ";\" t3conv:trusted-paths))))) ; t3conv-trust-runtime-for-SECURELOAD";
+}
+
+
 bool RemoveKnownTbatsaveBridgeLine(
     const std::string& line,
     const ProcessLaunchPlan& plan,
@@ -705,6 +745,7 @@ bool CollapseManagedPrincLines(
 std::string NormalizeTbatsaveHostStartupHook(
     const std::string& current,
     const ProcessLaunchPlan& plan,
+    const std::string& trusted_paths_line,
     const std::string& bridge_load_line
 ) {
     std::istringstream input(current);
@@ -714,6 +755,9 @@ std::string NormalizeTbatsaveHostStartupHook(
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
+        }
+        if (IsManagedTrustedPathsBootstrapLine(line)) {
+            continue;
         }
         if (RemoveKnownTbatsaveBridgeLine(line, plan, bridge_load_line)) {
             continue;
@@ -734,6 +778,8 @@ std::string NormalizeTbatsaveHostStartupHook(
     if (normalized.back() != '\n') {
         normalized.push_back('\n');
     }
+    normalized += trusted_paths_line;
+    normalized += "\n";
     normalized += bridge_load_line;
     normalized += "\n(princ)\n";
     return normalized;
@@ -804,6 +850,7 @@ bool RenderTbatsaveHostRuntimeScripts(
     bootstrap << "{\n";
     bootstrap << "  \"config\": \"" << EscapeJson(plan.config_path.string()) << "\",\n";
     bootstrap << "  \"tangent_root\": \"" << EscapeJson(plan.tarch_root.string()) << "\",\n";
+    bootstrap << "  \"tangent_sys_dir\": \"" << EscapeJson(plan.tangent_sys_dir.string()) << "\",\n";
     bootstrap << "  \"autocad_root\": \"" << EscapeJson(plan.autocad_root.string()) << "\",\n";
     bootstrap << "  \"runtime_fontmap\": \"" << EscapeJson(plan.font_map_path.string()) << "\",\n";
     bootstrap << "  \"host_runtime_script\": \"" << EscapeJson(plan.host_runtime_script_path.string()) << "\",\n";
@@ -854,13 +901,14 @@ bool EnsureTbatsaveHostStartupHook(
         diagnostics.push_back("host_hook=mnl_created");
     }
 
+    const std::string trusted_paths_line = BuildTrustedPathsBootstrapLine(plan);
     const std::string bridge_load_line =
         "(load \"" + ToForwardSlashes(plan.host_bridge_script_path) + "\" nil)";
     const auto current = ReadWholeFile(plan.host_mnl_path);
     const std::string base_mnl =
         current.value_or(";; tangent.mnl -- TBatSave host bridge\n(princ)\n");
     const std::string normalized =
-        NormalizeTbatsaveHostStartupHook(base_mnl, plan, bridge_load_line);
+        NormalizeTbatsaveHostStartupHook(base_mnl, plan, trusted_paths_line, bridge_load_line);
     if (current.has_value() && *current == normalized) {
         diagnostics.push_back("host_hook=already_normalized");
         return true;
@@ -1313,6 +1361,9 @@ std::vector<std::string> CollectCommonDiagnostics(const ProcessLaunchPlan& plan)
     if (!plan.font_dir.empty()) {
         diagnostics.push_back("font_dir=" + plan.font_dir.string());
     }
+    if (!plan.tangent_sys_dir.empty()) {
+        diagnostics.push_back("tangent_sys_dir=" + plan.tangent_sys_dir.string());
+    }
     if (!plan.autocad_fonts_dir.empty()) {
         diagnostics.push_back("autocad_fonts_dir=" + plan.autocad_fonts_dir.string());
     }
@@ -1512,6 +1563,7 @@ ProcessLaunchPlan ProcessManager::BuildLaunchPlan(const CliOptions& options, con
     plan.logs_dir = resolved.logs_dir;
     plan.runtime_dir = resolved.runtime_dir;
     plan.tarch_root = resolved.tangent_root;
+    plan.tangent_sys_dir = resolved.tangent_sys_dir;
     plan.autocad_root = resolved.autocad_root;
     plan.host_ready_path = resolved.host_ready_path;
     plan.host_stop_path = resolved.host_stop_path;
@@ -1776,6 +1828,7 @@ std::string ProcessManager::RenderLaunchPlan(const CliOptions& options, const Pr
     stream << "host_bridge_script=" << plan.host_bridge_script_path.string() << "\n";
     stream << "font_map=" << plan.font_map_path.string() << "\n";
     stream << "font_dir=" << plan.font_dir.string() << "\n";
+    stream << "tangent_sys_dir=" << plan.tangent_sys_dir.string() << "\n";
     stream << "autocad_fonts_dir=" << plan.autocad_fonts_dir.string() << "\n";
     stream << "font_alt=" << plan.font_alt << "\n";
     stream << "font_search_path=" << BuildFontSearchPath(plan) << "\n";
@@ -1823,6 +1876,7 @@ std::string ProcessManager::RenderLaunchPlanJson(const CliOptions& options, cons
            << "\",\n";
     stream << "  \"font_map\": \"" << EscapeJson(plan.font_map_path.string()) << "\",\n";
     stream << "  \"font_dir\": \"" << EscapeJson(plan.font_dir.string()) << "\",\n";
+    stream << "  \"tangent_sys_dir\": \"" << EscapeJson(plan.tangent_sys_dir.string()) << "\",\n";
     stream << "  \"autocad_fonts_dir\": \"" << EscapeJson(plan.autocad_fonts_dir.string()) << "\",\n";
     stream << "  \"font_alt\": \"" << EscapeJson(plan.font_alt) << "\",\n";
     stream << "  \"font_search_path\": \"" << EscapeJson(BuildFontSearchPath(plan)) << "\",\n";

@@ -269,6 +269,8 @@ std::vector<std::string> BuildChildArgs(
     }
     child_args.push_back("--internal-tangent-root");
     child_args.push_back(config.resolved.tangent_root.string());
+    child_args.push_back("--internal-tangent-sys-dir");
+    child_args.push_back(config.resolved.tangent_sys_dir.string());
     child_args.push_back("--internal-autocad-root");
     child_args.push_back(config.resolved.autocad_root.string());
     child_args.push_back("--internal-font-dir");

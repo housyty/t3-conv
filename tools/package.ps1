@@ -87,6 +87,7 @@ New-Item -ItemType Directory -Path (Join-Path $PackageRoot "docs") | Out-Null
 
 Copy-Item -LiteralPath $ExePath -Destination (Join-Path $PackageRoot "t3conv.exe")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "t3conv.ini") -Destination (Join-Path $PackageRoot "t3conv.ini")
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\restore-autocad-settings.cmd") -Destination (Join-Path $PackageRoot "restore-autocad-settings.cmd")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\tgstart_host\tangent_mnl_bridge.lsp") -Destination (Join-Path $PackageRoot "runtime\tgstart_host\tangent_mnl_bridge.lsp")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\tgstart_host\tbatsave_experimental_trigger.lsp") -Destination (Join-Path $PackageRoot "runtime\tgstart_host\tbatsave_experimental_trigger.lsp")
 
@@ -101,7 +102,7 @@ foreach ($FontFile in $FontFiles) {
 ## Requirements
 
 - Tianzheng T20 V9 must be installed on this machine.
-- AutoCAD must be installed on this machine.
+- AutoCAD 2020 or 2021 must be installed on this machine.
 - The package does not include Tianzheng or AutoCAD files.
 
 ## Usage
@@ -125,6 +126,16 @@ Folder batch:
 ````
 
 Folder-batch summaries are appended to `t3conv.log` as a `batch_summary` block. The Tianzheng CAD host is reused between files and restarted only for timeouts, launch failures, crashes, or explicit host-side failures.
+
+## Restore AutoCAD interactive settings
+
+If AutoCAD command line, dialogs, proxy prompts, xref notifications, or font fallback settings were changed during conversion or debugging, run:
+
+````powershell
+.\restore-autocad-settings.cmd
+````
+
+The helper connects to a running AutoCAD session, or starts one through COM when none is running. It only writes ordinary AutoCAD variables and is safe to run repeatedly.
 
 ## Configuration
 

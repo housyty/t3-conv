@@ -67,7 +67,7 @@ AcPal.dll
 <workspace_root>\t3conv.ini
 ```
 
-默认可以不启用任何配置项；程序会自动检测 Tianzheng T20 V9 和 AutoCAD 2020-2026 根目录。项目字体目录固定为 `<workspace_root>\fonts`，不需要配置。
+默认可以不启用任何配置项；程序会自动检测 Tianzheng T20 V9 和 AutoCAD 2021 / 2020 根目录。项目字体目录固定为 `<workspace_root>\fonts`，不需要配置。
 
 ```ini
 [paths]
@@ -82,7 +82,8 @@ AcPal.dll
 
 - `tangent_root` 指向 Tianzheng T20 V9 根目录，优先使用 INI，其次 `T3CONV_TANGENT_ROOT`，最后自动检测。
 - Tianzheng 自动检测会优先检查各固定盘 `X:\Tangent\...` 下的常见目录，再检查 workspace 相邻目录或盘符根目录，最后检查 Program Files；候选目录必须同时包含 `TGStart.exe` 和 `SYS`。
-- `autocad_root` 指向 AutoCAD 根目录，优先使用 INI，其次 `T3CONV_AUTOCAD_ROOT`，最后按 AutoCAD 2026 到 AutoCAD 2020 的顺序自动检测。
+- `autocad_root` 指向 AutoCAD 根目录，优先使用 INI，其次 `T3CONV_AUTOCAD_ROOT`，最后按 AutoCAD 2021 到 AutoCAD 2020 的顺序自动检测。
+- 当前 direct worker 已明确支持的 AutoCAD / Tianzheng ARX 目录映射为：AutoCAD 2020 -> `sys23x64`，AutoCAD 2021 -> `sys24x64`。程序会校验映射目录下存在 `tch_kernal.arx`。
 - `<workspace_root>\fonts` 是固定项目字体目录，不能通过 INI 修改；目录不存在或没有字体文件时自动跳过。
 - `fontalt` 用于设置 AutoCAD `FONTALT`，优先使用 INI，其次 `T3CONV_FONTALT`，最后使用 `HZTXT.SHX`。
 - 如果未检测到 Tianzheng T20 V9、`TGStart.exe`、AutoCAD 根目录或 AutoCAD `Fonts` 目录，程序会报错退出，不继续启动 CAD。
@@ -151,6 +152,7 @@ timeout_seconds=120
 | `workspace_root` | `t3conv.ini` 所在目录 |
 | `tgstart_exe` | `<tangent_root>\TGStart.exe` |
 | `tangent_mnl` | `<tangent_root>\SYS\tangent.mnl` |
+| `tangent_sys_dir` | AutoCAD 2020 -> `sys23x64`；AutoCAD 2021 -> `sys24x64` |
 | `runtime_root` | `<workspace_root>\runtime\tgstart_host` |
 | `var_root` | `<workspace_root>\var` |
 | `runtime_dir` | `<workspace_root>\var\runtime` |
@@ -206,7 +208,7 @@ timeout_seconds=120
 | `host_ready.txt` | LSP 环境准备完成后写入，C++ 用它判断宿主是否 ready。 |
 | `worker_status.txt` | direct worker 写入成功 / 失败、步骤、`save_result` 等诊断。 |
 
-除上表列出的 4 个文件外，当前生产链路没有其他 `.txt` 状态标记需要保留。
+除上表列出的 3 个文件外，当前生产链路没有其他 `.txt` 状态标记需要保留。
 
 `var` 下所有文件都是本机运行态产物，可以删除，程序会按需重新生成。
 
@@ -296,7 +298,7 @@ AcDbDatabase ctor
 ```text
 Tianzheng version = T3
 CAD version = AutoCAD 2004
-selector = 16
+selector = 0x10
 SaveAsTArch3 success = 5100
 ```
 
@@ -319,7 +321,7 @@ status=success
 host_action=tbatsave_direct_worker_succeeded
 tbatsave_direct_worker_read_status=0
 tbatsave_direct_worker_save_result=5100
-tbatsave_direct_worker_selector=16
+tbatsave_direct_worker_selector=16  # 0x10
 timeout_seconds=120
 ```
 
@@ -500,6 +502,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```text
 t3conv.exe
 t3conv.ini
+restore-autocad-settings.cmd
 runtime\tgstart_host\*.lsp
 fonts\
 docs\README-packaged.md

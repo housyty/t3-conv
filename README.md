@@ -41,7 +41,7 @@ The tool does not use `accoreconsole`, legacy Python prototypes, ARX test scaffo
 
 - Windows x64.
 - Tianzheng TArch T20 V9 installed locally.
-- AutoCAD 2020-2026 installed locally, with an available `Fonts` directory.
+- AutoCAD 2020 or 2021 installed locally, with an available `Fonts` directory.
 - CMake 3.20+ and a C++17-capable MSVC toolchain when building from source.
 
 The portable package and this repository do not include Tianzheng or AutoCAD files.
@@ -63,7 +63,8 @@ Resolution order:
 
 - `paths.tangent_root`: INI value, then `T3CONV_TANGENT_ROOT`, then auto-detection.
 - Tianzheng auto-detection checks common fixed-drive `X:\Tangent\...` installs first, then nearby workspace or drive-root candidates, and finally Program Files; candidates must contain `TGStart.exe` and `SYS`.
-- `paths.autocad_root`: INI value, then `T3CONV_AUTOCAD_ROOT`, then auto-detection from AutoCAD 2020-2026.
+- `paths.autocad_root`: INI value, then `T3CONV_AUTOCAD_ROOT`, then auto-detection from AutoCAD 2021 to AutoCAD 2020.
+- The Tianzheng ARX directory is selected from the AutoCAD version: AutoCAD 2020 -> `sys23x64`, AutoCAD 2021 -> `sys24x64`.
 - `fonts.fontalt`: INI value, then `T3CONV_FONTALT`, then `HZTXT.SHX`.
 - Project fonts are always read from [`fonts`](./fonts).
 
@@ -123,9 +124,15 @@ Single-file and folder conversions automatically inspect, reuse, launch, and cle
 
 ## Restore AutoCAD Command Line and Common Settings
 
-If AutoCAD's command line is hidden after conversion or manual debugging, or if dialog boxes, proxy object prompts, external reference notifications, or font fallback behavior changed, first press `Ctrl + 9` to restore the command line. If AutoCAD shows a prompt, choose to show the command line.
+If AutoCAD's command line is hidden after conversion or manual debugging, or if dialog boxes, proxy object prompts, external reference notifications, or font fallback behavior changed, run the standalone helper:
 
-After the command line is visible, copy the following snippet into the AutoCAD command line and press Enter to restore common interactive settings:
+```powershell
+.\tools\restore-autocad-settings.cmd
+```
+
+The helper connects to a running AutoCAD session, or starts AutoCAD through COM when none is running. It only restores ordinary AutoCAD variables, so it is safe to run repeatedly and does not participate in `t3conv.exe` startup.
+
+If COM automation is unavailable, first press `Ctrl + 9` to restore the command line. If AutoCAD shows a prompt, choose to show the command line. After the command line is visible, copy the following fallback snippet into the AutoCAD command line and press Enter:
 
 ```lisp
 (progn
@@ -193,6 +200,7 @@ The zip contains only runtime files:
 
 - `t3conv.exe`
 - `t3conv.ini`
+- `restore-autocad-settings.cmd`
 - `runtime\tgstart_host\*.lsp`
 - `fonts\`
 - `docs\README-packaged.md`

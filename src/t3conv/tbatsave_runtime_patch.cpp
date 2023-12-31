@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -20,8 +21,6 @@ namespace t3conv {
 
 namespace {
 
-constexpr DWORD kAcadNonUiFlagRva = 0x009F95B0;
-constexpr DWORD kAcadUiStateRva = 0x009E6C80;
 constexpr std::uint64_t kTbatsavePostInitTailTargetRva = 0x056170;
 constexpr SIZE_T kHookPatchLength = 19;
 constexpr SIZE_T kStubSize = 0x400;
@@ -33,13 +32,7 @@ constexpr SIZE_T kWorkerTelemetryOffset = 0x200;
 constexpr std::uint64_t kTbatsaveDirectWorkerMagic = 0x314B524F57584254ULL;  // "TBXWORK1"
 constexpr DWORD kTbatsaveDirectWorkerModuleWaitMilliseconds = 30000;
 constexpr std::uint32_t kTbatsaveDirectWorkerSuccessReturn = 0x13EC;
-constexpr std::uint64_t kTchAcDbDatabaseCtorRva = 0x64A8D0;
-constexpr std::uint64_t kTchAcDbDatabaseDtorRva = 0x64A8D6;
-constexpr std::uint64_t kTchAcDbDatabaseReadDwgFileRva = 0x64A912;
-constexpr std::uint64_t kTchTbatsavePreprocessGroupsRva = 0x01B310;
-constexpr std::uint64_t kTchTbatsavePreprocessBlocksRva = 0x01E850;
-constexpr std::uint64_t kTchSaveAsTArch3Rva = 0x027310;
-constexpr std::uint64_t kTchTbatsaveSelectorBaseRva = 0x9E6C7C;
+constexpr std::uint32_t kTbatsaveDirectWorkerFixedSelector = 0x10;
 constexpr DWORD kDirectWorkerProcessAccess =
     PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE |
     PROCESS_QUERY_INFORMATION;
@@ -65,6 +58,113 @@ constexpr std::array<std::uint8_t, 20> kExpectedWorkerGeneralSignature = {
     0x48, 0x89, 0x54, 0x24, 0x10,
     0x48, 0x89, 0x4C, 0x24, 0x08,
 };
+
+struct RuntimeSignature {
+    std::array<std::uint8_t, 24> bytes{};
+    SIZE_T size = 0;
+};
+
+struct TchKernelRuntimeLayout {
+    const char* name = "";
+    const wchar_t* sys_dir_name = L"";
+    std::uint64_t acdb_database_ctor_rva = 0;
+    std::uint64_t acdb_database_dtor_rva = 0;
+    std::uint64_t acdb_database_read_dwg_file_rva = 0;
+    std::uint64_t preprocess_groups_rva = 0;
+    std::uint64_t preprocess_blocks_rva = 0;
+    std::uint64_t save_as_tarch3_rva = 0;
+    std::uint64_t selector_base_rva = 0;
+    std::uint64_t non_ui_flag_rva = 0;
+    std::uint64_t ui_state_flag_rva = 0;
+    std::uint32_t fixed_selector = kTbatsaveDirectWorkerFixedSelector;
+    RuntimeSignature acdb_database_ctor_signature{};
+    RuntimeSignature acdb_database_dtor_signature{};
+    RuntimeSignature acdb_database_read_dwg_file_signature{};
+    RuntimeSignature preprocess_groups_signature{};
+    RuntimeSignature preprocess_blocks_signature{};
+    RuntimeSignature save_as_tarch3_signature{};
+};
+
+constexpr RuntimeSignature MakeSignature(
+    const std::initializer_list<std::uint8_t> bytes
+) {
+    RuntimeSignature signature{};
+    SIZE_T index = 0;
+    for (const std::uint8_t byte : bytes) {
+        if (index < signature.bytes.size()) {
+            signature.bytes[index] = byte;
+            ++index;
+        }
+    }
+    signature.size = index;
+    return signature;
+}
+
+constexpr TchKernelRuntimeLayout kTchKernelSys23x64Layout{
+    "sys23x64",
+    L"sys23x64",
+    0x64A8D0,  // acdb_database_ctor_rva
+    0x64A8D6,  // acdb_database_dtor_rva
+    0x64A912,  // acdb_database_read_dwg_file_rva
+    0x01B310,  // preprocess_groups_rva
+    0x01E850,  // preprocess_blocks_rva
+    0x027310,  // save_as_tarch3_rva
+    0x9E6C7C,  // selector_base_rva
+    0x9F95B0,  // non_ui_flag_rva
+    0x9E6C80,  // ui_state_flag_rva
+    kTbatsaveDirectWorkerFixedSelector,
+    MakeSignature({0xFF, 0x25, 0x7A, 0x05, 0x03, 0x00}),
+    MakeSignature({0xFF, 0x25, 0x7C, 0x05, 0x03, 0x00}),
+    MakeSignature({0xFF, 0x25, 0x90, 0x05, 0x03, 0x00}),
+    MakeSignature({
+        0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x56, 0x48,
+        0x8B, 0xEC, 0x48, 0x83, 0xEC, 0x70,
+    }),
+    MakeSignature({
+        0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x56, 0x48,
+        0x8D, 0x6C, 0x24, 0xC9, 0x48, 0x81, 0xEC, 0xD0,
+    }),
+    MakeSignature({
+        0x48, 0x8B, 0xC4, 0x44, 0x88, 0x48, 0x20, 0x44,
+        0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x55,
+        0x56, 0x57, 0x41, 0x54,
+    }),
+};
+
+constexpr TchKernelRuntimeLayout kTchKernelSys24x64Layout{
+    "sys24x64",
+    L"sys24x64",
+    0x64156A,  // acdb_database_ctor_rva
+    0x641570,  // acdb_database_dtor_rva
+    0x6415AC,  // acdb_database_read_dwg_file_rva
+    0x01EB00,  // preprocess_groups_rva
+    0x01E200,  // preprocess_blocks_rva
+    0x0273A0,  // save_as_tarch3_rva
+    0,  // selector_base_rva
+    0,  // non_ui_flag_rva
+    0,  // ui_state_flag_rva
+    kTbatsaveDirectWorkerFixedSelector,
+    MakeSignature({0xFF, 0x25, 0x80, 0xF5, 0x02, 0x00}),
+    MakeSignature({0xFF, 0x25, 0x82, 0xF5, 0x02, 0x00}),
+    MakeSignature({0xFF, 0x25, 0x96, 0xF5, 0x02, 0x00}),
+    MakeSignature({
+        0x40, 0x56, 0x48, 0x83, 0xEC, 0x60, 0x33, 0xF6,
+        0x48, 0x8D, 0x54, 0x24, 0x78, 0x45, 0x33, 0xC0,
+    }),
+    MakeSignature({
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x55, 0x56, 0x57,
+        0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24,
+        0xC9, 0x48, 0x81, 0xEC, 0xD0,
+    }),
+    MakeSignature({
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x44, 0x88, 0x4C,
+        0x24, 0x20, 0x44, 0x89, 0x44, 0x24, 0x18, 0x48,
+        0x89, 0x54, 0x24, 0x10,
+    }),
+};
+
+bool ReadAll(HANDLE process, uintptr_t remote, void* data, SIZE_T size);
+bool WriteAll(HANDLE process, uintptr_t remote, const void* data, SIZE_T size);
 
 struct TbatsaveRuntimePatchTelemetryBlock {
     std::uint64_t magic = kTbatsaveTelemetryMagic;
@@ -140,6 +240,7 @@ struct TbatsaveRuntimePatchSession {
 struct TianzhengAcadProcess {
     DWORD process_id = 0;
     uintptr_t tch_kernal_base = 0;
+    std::filesystem::path tch_kernal_path;
 };
 
 TbatsaveRuntimePatchSession g_tbatsave_patch_session{};
@@ -202,7 +303,117 @@ std::optional<DWORD> FindNewestProcessIdByName(const wchar_t* image_name) {
     return best_pid;
 }
 
-std::optional<uintptr_t> FindModuleBaseAddress(DWORD process_id, const wchar_t* module_name) {
+struct ModuleMatch {
+    uintptr_t base = 0;
+    std::filesystem::path path;
+};
+
+std::wstring LowerWide(std::wstring value) {
+    for (wchar_t& ch : value) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    return value;
+}
+
+std::filesystem::path AbsoluteLexicallyNormal(std::filesystem::path path) {
+    std::error_code error_code;
+    path = std::filesystem::absolute(path, error_code).lexically_normal();
+    if (error_code) {
+        return path.lexically_normal();
+    }
+    return path;
+}
+
+bool SamePathCaseInsensitive(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right
+) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    return LowerWide(AbsoluteLexicallyNormal(left).wstring()) ==
+           LowerWide(AbsoluteLexicallyNormal(right).wstring());
+}
+
+std::wstring ParentDirectoryNameLower(const std::filesystem::path& path) {
+    std::filesystem::path parent = path.parent_path();
+    if (parent.empty()) {
+        parent = path;
+    }
+    return LowerWide(parent.filename().wstring());
+}
+
+const TchKernelRuntimeLayout* ResolveTchKernelRuntimeLayout(
+    const std::filesystem::path& tch_kernal_path
+) {
+    const std::wstring sys_dir = ParentDirectoryNameLower(tch_kernal_path);
+    if (sys_dir == LowerWide(kTchKernelSys23x64Layout.sys_dir_name)) {
+        return &kTchKernelSys23x64Layout;
+    }
+    if (sys_dir == LowerWide(kTchKernelSys24x64Layout.sys_dir_name)) {
+        return &kTchKernelSys24x64Layout;
+    }
+    return nullptr;
+}
+
+bool ValidateRuntimeSignature(
+    HANDLE process,
+    const uintptr_t tch_kernal_base,
+    const std::uint64_t rva,
+    const RuntimeSignature& signature
+) {
+    if (signature.size == 0) {
+        return true;
+    }
+
+    std::array<std::uint8_t, 24> existing{};
+    if (!ReadAll(process, tch_kernal_base + rva, existing.data(), signature.size)) {
+        return false;
+    }
+    return std::memcmp(existing.data(), signature.bytes.data(), signature.size) == 0;
+}
+
+bool ValidateTchKernelRuntimeLayout(
+    HANDLE process,
+    const uintptr_t tch_kernal_base,
+    const TchKernelRuntimeLayout& layout,
+    std::vector<std::string>& diagnostics
+) {
+    struct Check {
+        const char* name;
+        std::uint64_t rva;
+        RuntimeSignature signature;
+    };
+    const std::array<Check, 6> checks = {{
+        {"AcDbDatabase::ctor", layout.acdb_database_ctor_rva, layout.acdb_database_ctor_signature},
+        {"AcDbDatabase::dtor", layout.acdb_database_dtor_rva, layout.acdb_database_dtor_signature},
+        {
+            "AcDbDatabase::readDwgFile",
+            layout.acdb_database_read_dwg_file_rva,
+            layout.acdb_database_read_dwg_file_signature
+        },
+        {"preprocess_groups", layout.preprocess_groups_rva, layout.preprocess_groups_signature},
+        {"preprocess_blocks", layout.preprocess_blocks_rva, layout.preprocess_blocks_signature},
+        {"SaveAsTArch3", layout.save_as_tarch3_rva, layout.save_as_tarch3_signature},
+    }};
+
+    for (const Check& check : checks) {
+        if (!ValidateRuntimeSignature(process, tch_kernal_base, check.rva, check.signature)) {
+            diagnostics.push_back("tbatsave_direct_worker=layout_signature_mismatch");
+            diagnostics.push_back(
+                std::string("tbatsave_direct_worker_layout_mismatch_symbol=") + check.name
+            );
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<ModuleMatch> FindModule(
+    DWORD process_id,
+    const wchar_t* module_name,
+    const std::filesystem::path& expected_module_path = {}
+) {
     HANDLE snapshot =
         CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id);
     if (snapshot == INVALID_HANDLE_VALUE) {
@@ -218,14 +429,27 @@ std::optional<uintptr_t> FindModuleBaseAddress(DWORD process_id, const wchar_t* 
 
     do {
         if (_wcsicmp(entry.szModule, module_name) == 0) {
+            const std::filesystem::path module_path(entry.szExePath);
+            if (!expected_module_path.empty() &&
+                !SamePathCaseInsensitive(module_path, expected_module_path)) {
+                continue;
+            }
             const uintptr_t base = reinterpret_cast<uintptr_t>(entry.modBaseAddr);
             CloseHandle(snapshot);
-            return base;
+            return ModuleMatch{base, module_path};
         }
     } while (Module32NextW(snapshot, &entry));
 
     CloseHandle(snapshot);
     return std::nullopt;
+}
+
+std::optional<uintptr_t> FindModuleBaseAddress(DWORD process_id, const wchar_t* module_name) {
+    const auto module = FindModule(process_id, module_name);
+    if (!module.has_value()) {
+        return std::nullopt;
+    }
+    return module->base;
 }
 
 int CountAcadProcesses() {
@@ -308,7 +532,9 @@ bool TryDiagnoseDirectWorkerAccessDenied(std::vector<std::string>& diagnostics) 
     return true;
 }
 
-std::optional<TianzhengAcadProcess> FindNewestTianzhengAcadProcess() {
+std::optional<TianzhengAcadProcess> FindNewestTianzhengAcadProcess(
+    const ProcessLaunchPlan& plan
+) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
         return std::nullopt;
@@ -328,9 +554,13 @@ std::optional<TianzhengAcadProcess> FindNewestTianzhengAcadProcess() {
             continue;
         }
 
-        const auto tch_kernal_base =
-            FindModuleBaseAddress(entry.th32ProcessID, L"tch_kernal.arx");
-        if (!tch_kernal_base.has_value()) {
+        const std::filesystem::path expected_tch_kernal =
+            plan.tangent_sys_dir.empty()
+                ? std::filesystem::path()
+                : plan.tangent_sys_dir / "tch_kernal.arx";
+        const auto tch_kernal =
+            FindModule(entry.th32ProcessID, L"tch_kernal.arx", expected_tch_kernal);
+        if (!tch_kernal.has_value()) {
             continue;
         }
 
@@ -338,7 +568,11 @@ std::optional<TianzhengAcadProcess> FindNewestTianzhengAcadProcess() {
         if (!best.has_value() ||
             (creation_time.has_value() &&
              (!best_creation_time.has_value() || *creation_time > *best_creation_time))) {
-            best = TianzhengAcadProcess{entry.th32ProcessID, *tch_kernal_base};
+            best = TianzhengAcadProcess{
+                entry.th32ProcessID,
+                tch_kernal->base,
+                tch_kernal->path
+            };
             best_creation_time = creation_time;
         }
     } while (Process32NextW(snapshot, &entry));
@@ -1156,11 +1390,29 @@ std::array<std::uint8_t, N> BuildAbsoluteJumpPatch(const uintptr_t destination) 
     return patch;
 }
 
-bool TryWriteNonUiFlags(HANDLE process, const uintptr_t tch_kernal_base) {
+bool TryWriteNonUiFlags(
+    HANDLE process,
+    const uintptr_t tch_kernal_base,
+    const TchKernelRuntimeLayout& layout
+) {
+    if (layout.non_ui_flag_rva == 0 || layout.ui_state_flag_rva == 0) {
+        return true;
+    }
+
     const DWORD non_ui_enabled = 1;
     const DWORD ui_state_enabled = 1;
-    return WriteAll(process, tch_kernal_base + kAcadNonUiFlagRva, &non_ui_enabled, sizeof(non_ui_enabled)) &&
-           WriteAll(process, tch_kernal_base + kAcadUiStateRva, &ui_state_enabled, sizeof(ui_state_enabled));
+    return WriteAll(
+               process,
+               tch_kernal_base + layout.non_ui_flag_rva,
+               &non_ui_enabled,
+               sizeof(non_ui_enabled)
+           ) &&
+           WriteAll(
+               process,
+               tch_kernal_base + layout.ui_state_flag_rva,
+               &ui_state_enabled,
+               sizeof(ui_state_enabled)
+           );
 }
 
 std::vector<std::string> FormatTelemetryLines(
@@ -1558,6 +1810,7 @@ bool WriteDirectWorkerResultFile(
 }
 
 std::vector<std::uint8_t> BuildTbatsaveDirectWorkerStub(
+    const TchKernelRuntimeLayout& layout,
     const uintptr_t tch_kernal_base,
     const uintptr_t control_address,
     const uintptr_t db_address,
@@ -1586,7 +1839,7 @@ std::vector<std::uint8_t> BuildTbatsaveDirectWorkerStub(
     AppendMovRcxImm64(code, db_address);
     AppendMovEdxImm32(code, 0);
     AppendMovR8dImm32(code, 1);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchAcDbDatabaseCtorRva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.acdb_database_ctor_rva);
     AppendCallRax(code);
     AppendStoreImm32(code, step_address, 2);
 
@@ -1596,7 +1849,7 @@ std::vector<std::uint8_t> BuildTbatsaveDirectWorkerStub(
     AppendMovRdxImm64(code, source_address);
     AppendMovR8dImm32(code, 3);
     AppendMovR9dImm32(code, 0);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchAcDbDatabaseReadDwgFileRva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.acdb_database_read_dwg_file_rva);
     AppendCallRax(code);
     AppendStoreEax(code, read_status_address);
     AppendStoreImm32(code, step_address, 3);
@@ -1604,29 +1857,24 @@ std::vector<std::uint8_t> BuildTbatsaveDirectWorkerStub(
     const std::size_t read_failed_jump = AppendJneRel32Placeholder(code);
 
     AppendMovRcxImm64(code, db_address);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchTbatsavePreprocessGroupsRva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.preprocess_groups_rva);
     AppendCallRax(code);
     AppendStoreImm32(code, step_address, 4);
 
     AppendMovRcxImm64(code, db_address);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchTbatsavePreprocessBlocksRva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.preprocess_blocks_rva);
     AppendCallRax(code);
     AppendStoreImm32(code, step_address, 5);
 
-    AppendMovRaxImm64(code, tch_kernal_base + kTchTbatsaveSelectorBaseRva);
-    AppendMovEaxDwordPtrRax(code);
-    AppendMovR8dImm32(code, 0);
-    AppendStoreEax(code, selector_base_address);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchTbatsaveSelectorBaseRva);
-    AppendMovR8dDwordPtrRax(code);
-    AppendAddR8dImm8(code, 0x0E);
+    AppendMovR8dImm32(code, layout.fixed_selector);
+    AppendStoreR8d(code, selector_base_address);
     AppendStoreR8d(code, selector_address);
 
     // int SaveAsTArch3(db, out_path, selector, false)
     AppendMovRcxImm64(code, db_address);
     AppendMovRdxImm64(code, output_address);
     AppendMovR9dImm32(code, 0);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchSaveAsTArch3Rva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.save_as_tarch3_rva);
     AppendCallRax(code);
     AppendStoreEax(code, save_result_address);
     AppendStoreImm32(code, step_address, 6);
@@ -1646,7 +1894,7 @@ std::vector<std::uint8_t> BuildTbatsaveDirectWorkerStub(
     const std::size_t cleanup_label = code.size();
     AppendStoreImm32(code, step_address, 7);
     AppendMovRcxImm64(code, db_address);
-    AppendMovRaxImm64(code, tch_kernal_base + kTchAcDbDatabaseDtorRva);
+    AppendMovRaxImm64(code, tch_kernal_base + layout.acdb_database_dtor_rva);
     AppendCallRax(code);
     AppendStoreImm32(code, step_address, 8);
     AppendMovRaxImm64(code, status_address);
@@ -1678,12 +1926,13 @@ std::optional<uintptr_t> WaitForTchKernalBase(
 }
 
 std::optional<TianzhengAcadProcess> WaitForNewestTianzhengAcadProcess(
+    const ProcessLaunchPlan& plan,
     std::vector<std::string>& diagnostics
 ) {
     const ULONGLONG started = GetTickCount64();
     bool saw_acad = false;
     while (GetTickCount64() - started < kTbatsaveDirectWorkerModuleWaitMilliseconds) {
-        if (const auto process = FindNewestTianzhengAcadProcess(); process.has_value()) {
+        if (const auto process = FindNewestTianzhengAcadProcess(plan); process.has_value()) {
             return process;
         }
         saw_acad = saw_acad || CountAcadProcesses() > 0;
@@ -1948,7 +2197,8 @@ bool TryInstallTbatsaveRuntimePatch(
         } else {
             diagnostics.push_back("tbatsave_patch=already_installed_reuses_previous_parameters");
         }
-        const bool wrote_flags = TryWriteNonUiFlags(process, *tch_kernal_base);
+        const bool wrote_flags =
+            TryWriteNonUiFlags(process, *tch_kernal_base, kTchKernelSys23x64Layout);
         CloseHandle(process);
         return wrote_flags;
     }
@@ -2150,7 +2400,8 @@ bool TryInstallTbatsaveRuntimePatch(
         &ignored
     );
 
-    const bool wrote_flags = TryWriteNonUiFlags(process, *tch_kernal_base);
+    const bool wrote_flags =
+        TryWriteNonUiFlags(process, *tch_kernal_base, kTchKernelSys23x64Layout);
 
     if (wrote_hook && wrote_worker_t3_hook && wrote_worker_general_hook && wrote_flags) {
         g_tbatsave_patch_session.process_id = *acad_pid;
@@ -2199,13 +2450,24 @@ bool TryRunTbatsaveDirectWorker(
         return false;
     }
 
-    const auto acad_process = WaitForNewestTianzhengAcadProcess(diagnostics);
+    const auto acad_process = WaitForNewestTianzhengAcadProcess(plan, diagnostics);
     if (!acad_process.has_value()) {
         return false;
     }
     diagnostics.push_back(
         "tbatsave_direct_worker_selected_pid=" + std::to_string(acad_process->process_id)
     );
+    diagnostics.push_back(
+        "tbatsave_direct_worker_tch_kernal_path=" + acad_process->tch_kernal_path.string()
+    );
+
+    const TchKernelRuntimeLayout* layout =
+        ResolveTchKernelRuntimeLayout(acad_process->tch_kernal_path);
+    if (layout == nullptr) {
+        diagnostics.push_back("tbatsave_direct_worker=unsupported_tch_kernal_layout");
+        return false;
+    }
+    diagnostics.push_back(std::string("tbatsave_direct_worker_layout=") + layout->name);
 
     std::error_code error_code;
     std::filesystem::create_directories(plan.batch_output_dir, error_code);
@@ -2227,6 +2489,16 @@ bool TryRunTbatsaveDirectWorker(
     if (process == nullptr) {
         diagnostics.push_back("tbatsave_direct_worker=open_process_failed");
         diagnostics.push_back("tbatsave_direct_worker_last_error=" + std::to_string(GetLastError()));
+        return false;
+    }
+
+    if (!ValidateTchKernelRuntimeLayout(
+            process,
+            acad_process->tch_kernal_base,
+            *layout,
+            diagnostics
+        )) {
+        CloseHandle(process);
         return false;
     }
 
@@ -2259,7 +2531,7 @@ bool TryRunTbatsaveDirectWorker(
     const uintptr_t output_address = remote_base + kOutputOffset;
     const uintptr_t db_address = remote_base + kDbOffset;
 
-    if (!TryWriteNonUiFlags(process, acad_process->tch_kernal_base)) {
+    if (!TryWriteNonUiFlags(process, acad_process->tch_kernal_base, *layout)) {
         diagnostics.push_back("tbatsave_direct_worker=non_ui_flags_failed");
         VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
         CloseHandle(process);
@@ -2272,6 +2544,7 @@ bool TryRunTbatsaveDirectWorker(
     control.output_remote = output_address;
 
     const std::vector<std::uint8_t> stub = BuildTbatsaveDirectWorkerStub(
+        *layout,
         acad_process->tch_kernal_base,
         control_address,
         db_address,

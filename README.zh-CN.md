@@ -43,7 +43,7 @@ t3conv.exe
 
 - Windows x64。
 - 本机已安装 Tianzheng TArch T20 V9。
-- 本机已安装 AutoCAD 2020-2026，且存在可用的 `Fonts` 目录。
+- 本机已安装 AutoCAD 2020 或 2021，且存在可用的 `Fonts` 目录。
 - 从源码构建时需要 CMake 3.20+ 和支持 C++17 的 MSVC 工具链。
 
 便携包和本仓库不包含 Tianzheng 或 AutoCAD 文件。
@@ -65,7 +65,8 @@ t3conv.exe
 
 - `paths.tangent_root`：INI 配置，其次 `T3CONV_TANGENT_ROOT`，最后自动检测。
 - Tianzheng 自动检测会优先检查各固定盘 `X:\Tangent\...` 下的常见目录，再检查 workspace 相邻目录或盘符根目录，最后检查 Program Files；候选目录必须同时包含 `TGStart.exe` 和 `SYS`。
-- `paths.autocad_root`：INI 配置，其次 `T3CONV_AUTOCAD_ROOT`，最后从 AutoCAD 2020-2026 中自动检测。
+- `paths.autocad_root`：INI 配置，其次 `T3CONV_AUTOCAD_ROOT`，最后按 AutoCAD 2021 到 AutoCAD 2020 的顺序自动检测。
+- 天正 ARX 目录会按 AutoCAD 版本选择：AutoCAD 2020 -> `sys23x64`，AutoCAD 2021 -> `sys24x64`。
 - `fonts.fontalt`：INI 配置，其次 `T3CONV_FONTALT`，最后使用 `HZTXT.SHX`。
 - 项目字体固定读取 [`fonts`](./fonts) 目录。
 
@@ -125,9 +126,15 @@ C:\path\source_t3.dwg
 
 ## 恢复 AutoCAD 命令行和常用配置
 
-如果转换或手动调试后发现 AutoCAD 命令行不见了、对话框不弹出，或代理对象、外部参照、字体替代等行为被改动，可以先按键盘 `Ctrl + 9` 恢复命令行；如果弹出提示，选择显示命令行。
+如果转换或手动调试后发现 AutoCAD 命令行不见了、对话框不弹出，或代理对象、外部参照、字体替代等行为被改动，优先运行独立恢复工具：
 
-命令行恢复后，把下面这段复制到 AutoCAD 命令行并回车，可恢复常用交互配置：
+```powershell
+.\tools\restore-autocad-settings.cmd
+```
+
+这个工具会连接正在运行的 AutoCAD；如果当前没有 AutoCAD，会尝试通过 COM 启动一个实例。它只恢复普通 AutoCAD 变量，可以重复执行，也不会参与 `t3conv.exe` 的启动流程。
+
+如果 COM 自动化不可用，可以先按键盘 `Ctrl + 9` 恢复命令行；如果弹出提示，选择显示命令行。命令行恢复后，把下面这段复制到 AutoCAD 命令行并回车，作为手动备选：
 
 ```lisp
 (progn
@@ -195,6 +202,7 @@ ZIP 只包含运行必需文件：
 
 - `t3conv.exe`
 - `t3conv.ini`
+- `restore-autocad-settings.cmd`
 - `runtime\tgstart_host\*.lsp`
 - `fonts\`
 - `docs\README-packaged.md`

@@ -141,6 +141,7 @@ ParseResult ParseArgs(int argc, char** argv) {
     std::filesystem::path explicit_target_path;
     std::filesystem::path explicit_log_path;
     std::filesystem::path internal_tangent_root;
+    std::filesystem::path internal_tangent_sys_dir;
     std::filesystem::path internal_autocad_root;
     std::filesystem::path internal_font_dir;
     std::filesystem::path internal_autocad_fonts_dir;
@@ -199,6 +200,15 @@ ParseResult ParseArgs(int argc, char** argv) {
             continue;
         } else if (TrySplitOption(arg, "--internal-tangent-root", value)) {
             internal_tangent_root = value;
+            continue;
+        } else if (arg == "--internal-tangent-sys-dir") {
+            if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
+                return result;
+            }
+            internal_tangent_sys_dir = value;
+            continue;
+        } else if (TrySplitOption(arg, "--internal-tangent-sys-dir", value)) {
+            internal_tangent_sys_dir = value;
             continue;
         } else if (arg == "--internal-autocad-root") {
             if (!ConsumeValue(argc, argv, index, arg, value, result.error_message)) {
@@ -378,6 +388,10 @@ ParseResult ParseArgs(int argc, char** argv) {
         result.config.resolved.tangent_root = result.config.tangent_root;
         result.config.resolved.tgstart_exe = result.config.resolved.tangent_root / "TGStart.exe";
         result.config.resolved.tangent_mnl = result.config.resolved.tangent_root / "SYS" / "tangent.mnl";
+    }
+    if (!internal_tangent_sys_dir.empty()) {
+        result.config.tangent_sys_dir = internal_tangent_sys_dir.lexically_normal();
+        result.config.resolved.tangent_sys_dir = result.config.tangent_sys_dir;
     }
     if (!internal_autocad_root.empty()) {
         result.config.autocad_root = internal_autocad_root.lexically_normal();

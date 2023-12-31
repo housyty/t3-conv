@@ -39,6 +39,7 @@ struct ResolvedPaths {
     std::filesystem::path workspace_root;
     std::filesystem::path config_path;
     std::filesystem::path tangent_root;
+    std::filesystem::path tangent_sys_dir;
     std::filesystem::path autocad_root;
     std::filesystem::path tgstart_exe;
     std::filesystem::path tangent_mnl;
@@ -66,6 +67,7 @@ struct ResolvedPaths {
 struct AppConfig {
     std::filesystem::path config_path;
     std::filesystem::path tangent_root;
+    std::filesystem::path tangent_sys_dir;
     std::filesystem::path autocad_root;
     std::filesystem::path font_dir;
     std::filesystem::path autocad_fonts_dir;
@@ -113,6 +115,7 @@ struct ProcessLaunchPlan {
     std::filesystem::path stage_source_path;
     std::filesystem::path batch_output_dir;
     std::filesystem::path tarch_root;
+    std::filesystem::path tangent_sys_dir;
     std::filesystem::path autocad_root;
     std::filesystem::path working_dir;
     std::filesystem::path conversion_count_path;

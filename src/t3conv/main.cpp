@@ -293,6 +293,11 @@ std::optional<std::wstring> BuildRelaunchParameters(
     );
     AppendNamedWindowsArgument(
         parameters,
+        L"--internal-tangent-sys-dir",
+        parse_result.config.resolved.tangent_sys_dir
+    );
+    AppendNamedWindowsArgument(
+        parameters,
         L"--internal-autocad-root",
         parse_result.config.resolved.autocad_root
     );

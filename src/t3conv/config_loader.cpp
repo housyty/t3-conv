@@ -243,6 +243,59 @@ std::string BuildAutocadVersionDirectoryName(int year) {
 }
 
 
+std::optional<int> DetectAutocadYearFromRoot(const std::filesystem::path& autocad_root) {
+    const std::string name = autocad_root.filename().string();
+    constexpr std::string_view prefix = "AutoCAD ";
+    const std::string lower_name = ToLowerAscii(name);
+    const std::string lower_prefix = ToLowerAscii(std::string(prefix));
+    if (lower_name.rfind(lower_prefix, 0) != 0) {
+        return std::nullopt;
+    }
+
+    const std::string year_text = name.substr(prefix.size());
+    if (year_text.empty()) {
+        return std::nullopt;
+    }
+    try {
+        size_t parsed = 0;
+        const int year = std::stoi(year_text, &parsed);
+        if (parsed == year_text.size()) {
+            return year;
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+
+std::string BuildTangentSysDirectoryNameForAutocadYear(const int year) {
+    switch (year) {
+        case 2020:
+            return "sys23x64";
+        case 2021:
+            return "sys24x64";
+        default:
+            return {};
+    }
+}
+
+
+std::filesystem::path ResolveTangentSysDir(
+    const std::filesystem::path& tangent_root,
+    const std::filesystem::path& autocad_root
+) {
+    const auto autocad_year = DetectAutocadYearFromRoot(autocad_root);
+    if (autocad_year.has_value()) {
+        const std::string sys_name =
+            BuildTangentSysDirectoryNameForAutocadYear(*autocad_year);
+        if (!sys_name.empty()) {
+            return (tangent_root / sys_name).lexically_normal();
+        }
+    }
+    return {};
+}
+
+
 void AddTangentNameCandidates(
     std::vector<std::filesystem::path>& candidates,
     const std::filesystem::path& base
@@ -389,7 +442,7 @@ std::filesystem::path ResolveConfiguredOrDetectedAutocadRoot(
                                                     ? std::filesystem::path()
                                                     : program_files / "Autodesk";
     std::vector<std::filesystem::path> autocad_candidates;
-    for (int year = 2026; year >= 2020; --year) {
+    for (int year : {2021, 2020}) {
         autocad_candidates.push_back(autodesk_root / BuildAutocadVersionDirectoryName(year));
     }
     const auto detected = FindFirstExistingDirectory(autocad_candidates);
@@ -418,6 +471,7 @@ std::string ResolveConfiguredFontAlt(const std::filesystem::path& config_path) {
 ResolvedPaths BuildResolvedPaths(
     const std::filesystem::path& workspace_root,
     const std::filesystem::path& tangent_root,
+    const std::filesystem::path& tangent_sys_dir,
     const std::filesystem::path& autocad_root,
     const std::filesystem::path& font_dir
 ) {
@@ -425,6 +479,7 @@ ResolvedPaths BuildResolvedPaths(
     paths.workspace_root = workspace_root;
     paths.config_path = workspace_root / "t3conv.ini";
     paths.tangent_root = tangent_root;
+    paths.tangent_sys_dir = tangent_sys_dir;
     paths.autocad_root = autocad_root;
     paths.tgstart_exe = tangent_root / "TGStart.exe";
     paths.tangent_mnl = tangent_root / "SYS" / "tangent.mnl";
@@ -453,6 +508,7 @@ ResolvedPaths BuildResolvedPaths(
 
 bool ValidateInstallRoots(
     const std::filesystem::path& tangent_root,
+    const std::filesystem::path& tangent_sys_dir,
     const std::filesystem::path& autocad_root,
     std::string& error_message
 ) {
@@ -466,6 +522,19 @@ bool ValidateInstallRoots(
     }
     if (!DirectoryExists(tangent_root / "SYS")) {
         error_message = "Tianzheng SYS directory not found: " + (tangent_root / "SYS").string();
+        return false;
+    }
+    if (!DirectoryExists(tangent_sys_dir)) {
+        error_message =
+            "Tianzheng AutoCAD-specific SYS directory not found: " +
+            tangent_sys_dir.string();
+        return false;
+    }
+    const std::filesystem::path candidate = tangent_sys_dir;
+    if (!PathExists(candidate / "tch_kernal.arx")) {
+        error_message =
+            "tch_kernal.arx not found under Tianzheng AutoCAD-specific SYS directory: " +
+            (candidate / "tch_kernal.arx").string();
         return false;
     }
     if (!DirectoryExists(autocad_root)) {
@@ -499,7 +568,19 @@ bool ConfigLoader::Load(AppConfig& config, std::string& error_message) {
 
     const std::filesystem::path autocad_root =
         ResolveConfiguredOrDetectedAutocadRoot(workspace_root, config_path);
-    if (!ValidateInstallRoots(tangent_root, autocad_root, error_message)) {
+    if (!DirectoryExists(autocad_root)) {
+        error_message = "AutoCAD is not installed or not found. Set autocad_root in t3conv.ini or T3CONV_AUTOCAD_ROOT.";
+        return false;
+    }
+    const std::filesystem::path tangent_sys_dir =
+        ResolveTangentSysDir(tangent_root, autocad_root);
+    if (tangent_sys_dir.empty()) {
+        error_message =
+            "AutoCAD version is not mapped to a Tianzheng SYS directory. Supported mappings: "
+            "AutoCAD 2020 -> sys23x64, AutoCAD 2021 -> sys24x64.";
+        return false;
+    }
+    if (!ValidateInstallRoots(tangent_root, tangent_sys_dir, autocad_root, error_message)) {
         return false;
     }
 
@@ -508,11 +589,18 @@ bool ConfigLoader::Load(AppConfig& config, std::string& error_message) {
 
     config.config_path = config_path;
     config.tangent_root = tangent_root;
+    config.tangent_sys_dir = tangent_sys_dir;
     config.autocad_root = autocad_root;
     config.font_dir = font_dir;
     config.autocad_fonts_dir = autocad_root.empty() ? std::filesystem::path() : autocad_root / "Fonts";
     config.font_alt = font_alt;
-    config.resolved = BuildResolvedPaths(workspace_root, tangent_root, autocad_root, font_dir);
+    config.resolved = BuildResolvedPaths(
+        workspace_root,
+        tangent_root,
+        tangent_sys_dir,
+        autocad_root,
+        font_dir
+    );
     return true;
 }
 
